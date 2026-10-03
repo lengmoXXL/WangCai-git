@@ -1,0 +1,23 @@
+{
+  "name": "wangcai-git",
+  "private": true,
+  "version": "0.1.0",
+  "description": "旺财的 Git 插件",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.cjs",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "monaco-editor": "^0.57.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0"
+  }
+}
