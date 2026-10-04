@@ -4,9 +4,9 @@ import { createRoot } from 'react-dom/client';
 import * as monaco from 'monaco-editor/editor/editor.api.js';
 import 'monaco-editor/basic-languages/monaco.contribution.js';
 import 'monaco-editor/editor/contrib/find/browser/findController.js';
-import type { Theme } from '@wangcai/sdk';
+import type { Theme, WorkspaceActive } from '@wangcai/sdk';
 import type { Context } from '@wangcai/sdk/channel';
-import type { ActiveTerminal, Commit, Comparison, Diff, Font, GitFile, History, Overview, Settings, Stage } from './shared';
+import type { Commit, Comparison, Diff, Font, GitFile, History, Overview, Settings, Stage } from './shared';
 import './style.css';
 
 export const title = 'Git';
@@ -87,7 +87,7 @@ function DiffEditor({ diff, path, reading, wrap }: { diff: Diff; path: string; r
 }
 
 function DiffPane({ context, terminal, root, comparison, reading, wrap, refresh }: {
-  context: Context; terminal: ActiveTerminal; root: string; comparison: Comparison; reading: Reading; wrap: boolean; refresh: number;
+  context: Context; terminal: WorkspaceActive; root: string; comparison: Comparison; reading: Reading; wrap: boolean; refresh: number;
 }) {
   const [diff, setDiff] = useState<Diff>();
   const [error, setError] = useState('');
@@ -115,7 +115,7 @@ function FileRow({ file, select }: { file: GitFile; select: () => void }) {
 }
 
 function CommitRow({ commit, context, terminal, root, selected, toggle, select }: {
-  commit: Commit; context: Context; terminal: ActiveTerminal; root: string; selected: boolean;
+  commit: Commit; context: Context; terminal: WorkspaceActive; root: string; selected: boolean;
   toggle: () => void; select: (comparison: Comparison) => void;
 }) {
   const [files, setFiles] = useState<GitFile[]>();
@@ -159,7 +159,7 @@ function CommitRow({ commit, context, terminal, root, selected, toggle, select }
   </>;
 }
 
-function Repository({ context, terminal, activation }: { context: Context; terminal: ActiveTerminal; activation: number }) {
+function Repository({ context, terminal, activation }: { context: Context; terminal: WorkspaceActive; activation: number }) {
   const [overview, setOverview] = useState<Overview>();
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
@@ -269,13 +269,13 @@ function Repository({ context, terminal, activation }: { context: Context; termi
 }
 
 function GitView({ context, activation, workspaceId }: { context: Context; activation: number; workspaceId?: string }) {
-  const [terminal, setTerminal] = useState<ActiveTerminal | null>(null);
+  const [terminal, setTerminal] = useState<WorkspaceActive | null>(null);
   useEffect(() => {
-    const off = context.global.subscribe<ActiveTerminal | null>('terminal:active', (value) => {
+    const off = context.global.subscribe<WorkspaceActive | null>('workspace:active', (value) => {
       if (workspaceId !== undefined && value !== null && value.workspaceId !== workspaceId) return;
       setTerminal(previous => JSON.stringify(previous) === JSON.stringify(value) ? previous : value);
     });
-    void context.global.publish('terminal:query', null);
+    void context.global.publish('workspace:query', null);
     return off;
   }, [context, activation, workspaceId]);
   if (!terminal) return <div className="git-note">请选择一个已连接的终端</div>;
@@ -303,8 +303,8 @@ export async function mount(_container: HTMLElement, context: Context) {
   const profile = await context.host.request<Settings>('config');
   font = profile.font;
   monaco.editor.defineTheme('wangcai', editorTheme(profile.theme));
-  const offActive = context.global.subscribe<ActiveTerminal | null>('terminal:active', (value) => { activeWorkspaceId = value?.workspaceId; });
-  void context.global.publish('terminal:query', null);
+  const offActive = context.global.subscribe<WorkspaceActive | null>('workspace:active', (value) => { activeWorkspaceId = value?.workspaceId; });
+  void context.global.publish('workspace:query', null);
   const response = await fetch(new URL('./ui.worker.js', import.meta.url));
   if (!response.ok) throw new Error('Cannot load Git diff worker');
   const workerURL = URL.createObjectURL(new Blob([await response.text()], { type: 'text/javascript' }));

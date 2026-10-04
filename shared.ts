@@ -1,14 +1,8 @@
-import type { Profile } from '@wangcai/sdk';
+import type { Profile, WorkspaceActive } from '@wangcai/sdk';
 
 // The config this plugin accepts: main.ts declares a schema for the same fields.
 export type Font = { family: string; size: number; lineHeight?: number };
 export type Settings = Profile & { font: Font };
-
-export interface ActiveTerminal {
-  machine: { id: string; name: string; host?: string };
-  sessionId: string;
-  workspaceId?: string;
-}
 
 export interface GitFile { path: string; oldPath?: string; status: string }
 export type Stage = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
@@ -28,7 +22,7 @@ export interface Overview extends History {
 export interface Comparison extends GitFile { source: Stage | 'commit'; rev?: string }
 export interface Diff { oldText: string; newText: string; notice?: string }
 export interface GitRequest {
-  terminal: ActiveTerminal;
+  terminal: WorkspaceActive;
   root?: string;
   head?: string;
   skip?: number;
