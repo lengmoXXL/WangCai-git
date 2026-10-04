@@ -22,8 +22,8 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
   try {
     const config = join(home, '.config/wangcai');
     mkdirSync(config, { recursive: true });
-    writeFileSync(join(config, 'init.ts'), `export default { plugins: ${JSON.stringify([
-      { id: 'terminal-agent' }, { id: 'files' }, { id: 'terminal' }, { id: 'git', directory },
+    writeFileSync(join(config, 'init.ts'), `export default { workspaces: ${JSON.stringify([{ id: 'terminal-agent' }])}, tabs: ${JSON.stringify([
+      { id: 'files' }, { id: 'terminal' }, { id: 'git', directory },
     ])} };\n`);
     const repo = join(home, "repo with 'quote");
     mkdirSync(repo);
@@ -60,9 +60,18 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
     const staged = page.locator('.git-rail > details').filter({ has: page.locator('summary', { hasText: /^已暂存/ }) });
     await staged.locator('.git-file').first().click();
     await page.locator('.git-editor .view-lines').filter({ hasText: 'STAGED_VALUE' }).waitFor();
-    const diffText = page.locator('.git-editor .view-lines').first();
-    assert.equal(await diffText.evaluate((element) => getComputedStyle(element).fontSize), '12px');
-    assert.match(await diffText.evaluate((element) => getComputedStyle(element).fontFamily), /^"DejaVuSansM Nerd Font Mono"/);
+    // Monaco swaps the rendered lines as the diff changes, so read the font until a live one reports it.
+    let font = {};
+    for (let attempt = 0; attempt < 100; attempt++) {
+      font = await page.locator('.git-editor .view-lines').first().evaluate((element) => {
+        const { fontSize, fontFamily } = getComputedStyle(element);
+        return { fontSize, fontFamily };
+      });
+      if (font.fontSize) break;
+      await page.waitForTimeout(50);
+    }
+    assert.equal(font.fontSize, '12px');
+    assert.match(font.fontFamily, /^"DejaVuSansM Nerd Font Mono"/);
     const worktree = page.locator('.git-rail > details').filter({ has: page.locator('summary', { hasText: /^未暂存/ }) });
     await worktree.locator('.git-file').first().click();
     await page.locator('.git-editor .editor.modified .view-lines').filter({ hasText: 'WORKTREE_VALUE' }).waitFor();
@@ -167,8 +176,8 @@ test('the packaged app loads the plugin from the directory init.ts names', { tim
   try {
     const config = join(home, '.config/wangcai');
     mkdirSync(config, { recursive: true });
-    writeFileSync(join(config, 'init.ts'), `export default { plugins: ${JSON.stringify([
-      { id: 'terminal-agent' }, { id: 'terminal' }, { id: 'git', directory },
+    writeFileSync(join(config, 'init.ts'), `export default { workspaces: ${JSON.stringify([{ id: 'terminal-agent' }])}, tabs: ${JSON.stringify([
+      { id: 'terminal' }, { id: 'git', directory },
     ])} };\n`);
     desktop = await electron.launch({ executablePath: executable, args: [`--user-data-dir=${join(home, 'electron')}`], env });
     const page = await desktop.firstWindow();
