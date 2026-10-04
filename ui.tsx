@@ -5,7 +5,7 @@ import * as monaco from 'monaco-editor/editor/editor.api.js';
 import 'monaco-editor/basic-languages/monaco.contribution.js';
 import 'monaco-editor/editor/contrib/find/browser/findController.js';
 import type { Theme, WorkspaceActive } from '@wangcai/sdk';
-import type { Context } from '@wangcai/sdk/channel';
+import type { TabRecord, UiContext } from '@wangcai/sdk/channel';
 import type { Commit, Comparison, Diff, Font, GitFile, History, Overview, Settings, Stage } from './shared';
 import './style.css';
 
@@ -87,7 +87,7 @@ function DiffEditor({ diff, path, reading, wrap }: { diff: Diff; path: string; r
 }
 
 function DiffPane({ context, terminal, root, comparison, reading, wrap, refresh }: {
-  context: Context; terminal: WorkspaceActive; root: string; comparison: Comparison; reading: Reading; wrap: boolean; refresh: number;
+  context: UiContext; terminal: WorkspaceActive; root: string; comparison: Comparison; reading: Reading; wrap: boolean; refresh: number;
 }) {
   const [diff, setDiff] = useState<Diff>();
   const [error, setError] = useState('');
@@ -115,7 +115,7 @@ function FileRow({ file, select }: { file: GitFile; select: () => void }) {
 }
 
 function CommitRow({ commit, context, terminal, root, selected, toggle, select }: {
-  commit: Commit; context: Context; terminal: WorkspaceActive; root: string; selected: boolean;
+  commit: Commit; context: UiContext; terminal: WorkspaceActive; root: string; selected: boolean;
   toggle: () => void; select: (comparison: Comparison) => void;
 }) {
   const [files, setFiles] = useState<GitFile[]>();
@@ -159,7 +159,7 @@ function CommitRow({ commit, context, terminal, root, selected, toggle, select }
   </>;
 }
 
-function Repository({ context, terminal, activation }: { context: Context; terminal: WorkspaceActive; activation: number }) {
+function Repository({ context, terminal, activation }: { context: UiContext; terminal: WorkspaceActive; activation: number }) {
   const [overview, setOverview] = useState<Overview>();
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
@@ -268,7 +268,7 @@ function Repository({ context, terminal, activation }: { context: Context; termi
   </section>;
 }
 
-function GitView({ context, activation, workspaceId }: { context: Context; activation: number; workspaceId?: string }) {
+function GitView({ context, activation, workspaceId }: { context: UiContext; activation: number; workspaceId?: string }) {
   const [terminal, setTerminal] = useState<WorkspaceActive | null>(null);
   useEffect(() => {
     const off = context.global.subscribe<WorkspaceActive | null>('workspace:active', (value) => {
@@ -282,16 +282,12 @@ function GitView({ context, activation, workspaceId }: { context: Context; activ
   return <Repository key={JSON.stringify(terminal)} context={context} terminal={terminal} activation={activation} />;
 }
 
-export function open(context: Context) {
-  void openTab(context, activeWorkspaceId);
+export function open(context: UiContext, record?: TabRecord) {
+  openTab(context, record?.workspaceId ?? activeWorkspaceId);
 }
 
-export async function restore(context: Context, record: { workspaceId?: string }) {
-  await openTab(context, record.workspaceId);
-}
-
-function openTab(context: Context, workspaceId?: string) {
-  return context.host.request('tabs', { id: 'history', title: 'Git', workspaceId, mount(container: HTMLElement) {
+function openTab(context: UiContext, workspaceId?: string) {
+  context.host.tabs({ id: 'history', title: 'Git', workspaceId, mount(container: HTMLElement) {
     container.style.fontFamily = font.family;
     const root = createRoot(container);
     let activation = 0;
@@ -299,8 +295,8 @@ function openTab(context: Context, workspaceId?: string) {
   } });
 }
 
-export async function mount(_container: HTMLElement, context: Context) {
-  const profile = await context.host.request<Settings>('config');
+export async function mount(_container: HTMLElement, context: UiContext) {
+  const profile: Settings = context.host.config;
   font = profile.font;
   monaco.editor.defineTheme('wangcai', editorTheme(profile.theme));
   const offActive = context.global.subscribe<WorkspaceActive | null>('workspace:active', (value) => { activeWorkspaceId = value?.workspaceId; });

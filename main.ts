@@ -1,6 +1,6 @@
 import { join } from 'node:path';
-import { connect, type AgentInfo, type MachineConnection } from '@wangcai/sdk';
-import type { Context } from '@wangcai/sdk/channel';
+import { connect, type MachineConnection } from '@wangcai/sdk';
+import type { MainContext } from '@wangcai/sdk/channel';
 import { readGit, type RunGit } from './git';
 import type { GitRequest } from './shared';
 
@@ -13,7 +13,7 @@ export const config = {
   },
 };
 
-export function activate(context: Context) {
+export function activate(context: MainContext) {
   const pending = new Set<AbortController>();
   const connections = new Set<MachineConnection>();
   const handlers = ['overview', 'history', 'files', 'diff'].map(method => context.ui.handle(method, async (query: GitRequest) => {
@@ -23,8 +23,8 @@ export function activate(context: Context) {
     try {
       const { machine, sessionId } = query.terminal;
       connection = await connect(machine.host
-        ? { type: 'ssh', host: machine.host, agent: await context.host.request<AgentInfo>('agent'), signal: controller.signal }
-        : { type: 'local', binary: join(await context.host.request('resourcesDirectory'), 'wangcai'), signal: controller.signal });
+        ? { type: 'ssh', host: machine.host, agent: context.host.agent, signal: controller.signal }
+        : { type: 'local', binary: join(context.host.resourcesDirectory, 'wangcai'), signal: controller.signal });
       controller.signal.throwIfAborted();
       connections.add(connection);
       const cwd = method === 'overview' ? await connection.pty.cwd(sessionId) : query.root!;
