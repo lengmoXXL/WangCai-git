@@ -283,10 +283,7 @@ function GitView({ context, activation, workspaceId }: { context: UiContext; act
 }
 
 export function open(context: UiContext, record?: TabRecord) {
-  openTab(context, record?.workspaceId ?? activeWorkspaceId);
-}
-
-function openTab(context: UiContext, workspaceId?: string) {
+  const workspaceId = record?.workspaceId ?? activeWorkspaceId;
   context.host.tabs({ id: 'history', title: 'Git', workspaceId, mount(container: HTMLElement) {
     container.style.fontFamily = font.family;
     const root = createRoot(container);

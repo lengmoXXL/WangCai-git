@@ -21,7 +21,7 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
     // The workspace the Git tab follows comes from the plugin the installed app already has.
     const plugins = linkPlugins(home);
     if (!plugins || !existsSync(join(plugins, 'terminal-agent/main.cjs'))) { t.skip('the installed app has no workspace plugin'); return; }
-    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }, 'files', 'terminal'] });
+    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }] });
     const repo = join(home, "repo with 'quote");
     mkdirSync(repo);
     const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
