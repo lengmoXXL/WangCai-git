@@ -1,24 +1,26 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
-const { execFileSync } = require('node:child_process');
-const { testEnv, waitForTerminal, wangcaiApp, writeInit } = require('./wangcai.cjs');
+const { _electron: electron } = require('playwright-core');
+const { installedApp, linkPlugins, stopServer, testEnv, waitForTerminal, writeInit } = require('./wangcai.cjs');
 
 const directory = resolve(__dirname, '..');
 
 test('Git tab follows terminal cwd and shows one read-only diff at a time', { timeout: 180000 }, async (t) => {
-  const app = wangcaiApp();
-  if (!app) { t.skip('the WangCai checkout next to this repository is not built'); return; }
-  // The app brings the runner and the Electron it launches, so this repository needs neither.
-  const { _electron: electron } = require(join(app, 'node_modules/playwright'));
-  // The app reads the plugin from this directory, so there has to be a build of it to read.
-  if (!existsSync(join(directory, 'main.cjs'))) execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
+  const app = installedApp();
+  if (!app) { t.skip('the WangCai app is not installed'); return; }
+  // The app loads this directory's build, so the test starts from what the source says now.
+  execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-ui-')));
   const env = testEnv(home);
   let desktop;
   try {
+    // The workspace the Git tab follows comes from the plugin the installed app already has.
+    const plugins = linkPlugins(home);
+    if (!plugins || !existsSync(join(plugins, 'terminal-agent/main.cjs'))) { t.skip('the installed app has no workspace plugin'); return; }
     writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }, 'files', 'terminal'] });
     const repo = join(home, "repo with 'quote");
     mkdirSync(repo);
@@ -28,12 +30,7 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
     git('add', '.'); git('commit', '-qm', 'initial UI commit');
     writeFileSync(join(repo, 'sample.ts'), 'const value = "STAGED_VALUE";\n'); git('add', '.');
     writeFileSync(join(repo, 'sample.ts'), 'const value = "WORKTREE_VALUE";\n');
-    desktop = await electron.launch({
-      executablePath: require(join(app, 'node_modules/electron')),
-      args: [join(app, 'desktop'), `--user-data-dir=${join(home, 'electron')}`],
-      cwd: app,
-      env,
-    });
+    desktop = await electron.launch({ executablePath: app.executable, args: [`--user-data-dir=${join(home, 'electron')}`], env });
     const page = await desktop.firstWindow();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
@@ -155,30 +152,7 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
     assert.deepEqual(errors, []);
   } finally {
     await desktop?.close();
-    try { execFileSync(join(app, 'wangcaicli/dist/debug/wangcai'), ['server', 'stop'], { env, stdio: 'ignore' }); } catch {}
-    rmSync(home, { recursive: true, force: true });
-  }
-});
-test('the packaged app loads the plugin from the directory init.ts names', { timeout: 180000 }, async (t) => {
-  const app = wangcaiApp();
-  const executable = app && join(app, 'desktop/dist/package/mac/旺财.app/Contents/MacOS/旺财');
-  if (!executable || !existsSync(executable)) { t.skip('the WangCai checkout next to this repository is not packaged'); return; }
-  const { _electron: electron } = require(join(app, 'node_modules/playwright'));
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-packaged-')));
-  const env = testEnv(home);
-  let desktop;
-  try {
-    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }, 'terminal'] });
-    desktop = await electron.launch({ executablePath: executable, args: [`--user-data-dir=${join(home, 'electron')}`], env });
-    const page = await desktop.firstWindow();
-    await page.locator('.workspaces').waitFor();
-    await page.getByRole('button', { name: '切换右侧栏' }).click();
-    await page.getByRole('button', { name: '新建侧栏标签页' }).click();
-    await page.locator('#view-menu').getByRole('button', { name: 'Git', exact: true }).click();
-    await page.getByText('请选择一个已连接的终端', { exact: true }).waitFor();
-  } finally {
-    await desktop?.close();
-    try { execFileSync(join(app, 'wangcaicli/dist/debug/wangcai'), ['server', 'stop'], { env, stdio: 'ignore' }); } catch {}
+    stopServer(app.bundle, env);
     rmSync(home, { recursive: true, force: true });
   }
 });
