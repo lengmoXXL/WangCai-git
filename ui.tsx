@@ -224,7 +224,6 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
       : <div className="git-body" ref={body} data-rail={rail ? 'shown' : 'hidden'} style={{ '--rail-width': `${railWidth}px` } as CSSProperties}>
         <div className="git-rail-wrap">
           <nav className="git-rail" aria-label="Git 改动与历史">
-            <div className="git-section">改动 {overview.changes.length ? <small>{overview.changes.length}</small> : null}</div>
             {!overview.changes.length && <div className="git-note">工作区干净</div>}
             {(Object.entries(stages) as [Stage, string][]).map(([stage, title]) => {
               const files = overview.changes.filter(file => file.stage === stage);
@@ -234,7 +233,7 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
             })}
             {overview.truncated && <div className="git-note">仅显示前 1000 项改动</div>}
             <div className="git-gap" />
-            <details open><summary>提交历史</summary>
+            <div className="git-history">
               {overview.commits.map(commit => <CommitRow key={`${overview.root}:${commit.sha}`} commit={commit} context={context} terminal={terminal} root={overview.root}
                 selected={opened === commit.sha} toggle={() => setOpened(opened === commit.sha ? null : commit.sha)} select={setComparison} />)}
               {!overview.commits.length && <div className="git-note">暂无提交</div>}
@@ -246,7 +245,7 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
                 }).catch((error: Error) => { if (current === generation.current) setError(error.message); })
                   .finally(() => { if (current === generation.current) setOlder(false); });
               }}>{older ? '正在读取…' : '加载更多提交'}</button>}
-            </details>
+            </div>
           </nav>
           <div className="git-divider" role="separator" aria-orientation="vertical" aria-label="调整 Git 列表宽度" tabIndex={0}
             aria-valuenow={railWidth} aria-valuemin={railMinimum} aria-valuemax={railMaximum}

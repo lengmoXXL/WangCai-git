@@ -27,9 +27,7 @@
 .git-divider:focus-visible { outline: none; }
 .git-body[data-rail=hidden] .git-divider { display: none; position: absolute; top: 0; bottom: 0; left: var(--rail-width); }
 .git-body[data-rail=hidden] .git-rail-wrap:hover .git-divider { display: flex; }
-.git-section { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; color: var(--wc-muted); font-size: 11px; }
-.git-section small { font-variant-numeric: tabular-nums; }
-.git-gap { height: 1px; margin: 8px 10px; background: var(--wc-border); }
+.git-gap { flex: none; height: 1px; margin: 8px 10px; background: var(--wc-border); }
 .git-page summary { display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 10px; cursor: pointer; }
 .git-page summary::before { content: '▾'; color: var(--wc-muted); font-size: 9px; }
 .git-page details:not([open]) summary::before { content: '▸'; }

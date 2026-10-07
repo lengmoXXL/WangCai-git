@@ -49,6 +49,16 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
     await page.locator('.xterm-screen').filter({ hasText: 'repo with' }).waitFor();
     await page.getByRole('button', { name: '刷新 Git' }).click();
     await page.locator('.git-branch').filter({ hasText: 'main' }).waitFor();
+    const groups = await page.locator('.git-rail').evaluate((rail) => ({
+      titles: [...rail.querySelectorAll('summary')].map((node) => node.textContent.trim()),
+      arrows: [...rail.querySelectorAll('summary')].map((node) => getComputedStyle(node, '::before').content),
+      parts: [...rail.children].map((node) => node.className || node.tagName.toLowerCase()),
+      divider: [Math.round(rail.querySelector('.git-gap').getBoundingClientRect().height), getComputedStyle(rail.querySelector('.git-gap')).flexShrink],
+    }));
+    assert.deepEqual(groups.titles, ['已暂存 1', '未暂存 1'], 'the files are listed without a 改动 or 提交历史 title');
+    assert.deepEqual(groups.arrows, ['"▾"', '"▾"'], 'every file group carries its triangle');
+    assert.deepEqual(groups.parts, ['details', 'details', 'git-gap', 'git-history'], 'the divider sits between the files and the commits');
+    assert.deepEqual(groups.divider, [1, '0'], 'the divider never shrinks away');
     const staged = page.locator('.git-rail > details').filter({ has: page.locator('summary', { hasText: /^已暂存/ }) });
     await staged.locator('.git-file').first().click();
     await page.locator('.git-editor .view-lines').filter({ hasText: 'STAGED_VALUE' }).waitFor();
