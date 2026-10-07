@@ -1,4 +1,4 @@
-import type { Profile, WorkspaceActive } from '@wangcai/sdk';
+import type { Profile, WorkspaceActive } from '@lengmoxxl/sdk';
 
 // The config this plugin accepts: main.ts declares a schema for the same fields.
 export type Font = { family: string; size: number; lineHeight?: number };

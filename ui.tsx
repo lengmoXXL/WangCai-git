@@ -4,8 +4,8 @@ import { createRoot } from 'react-dom/client';
 import * as monaco from 'monaco-editor/editor/editor.api.js';
 import 'monaco-editor/basic-languages/monaco.contribution.js';
 import 'monaco-editor/editor/contrib/find/browser/findController.js';
-import type { Theme, WorkspaceActive } from '@wangcai/sdk';
-import type { TabRecord, UiContext } from '@wangcai/sdk/channel';
+import type { Theme, WorkspaceActive } from '@lengmoxxl/sdk';
+import type { TabRecord, UiContext } from '@lengmoxxl/sdk/channel';
 import type { Commit, Comparison, Diff, Font, GitFile, History, Overview, Settings, Stage } from './shared';
 import './style.css';
 

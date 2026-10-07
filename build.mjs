@@ -5,7 +5,7 @@ import esbuild from 'esbuild';
 
 /** @type {import('esbuild').BuildOptions} */
 const mainOptions = {
-  bundle: true, platform: 'node', target: 'node22', sourcemap: 'linked', external: ['@wangcai/sdk'],
+  bundle: true, platform: 'node', target: 'node22', sourcemap: 'linked', external: ['@lengmoxxl/sdk'],
   supported: { 'dynamic-import': false },
 };
 /** @type {import('esbuild').BuildOptions} */
@@ -25,7 +25,7 @@ export async function build(output = import.meta.dirname) {
     ...uiOptions, absWorkingDir: source, outdir: output,
     entryPoints: ['ui.tsx', ...(existsSync(join(source, 'ui.worker.ts')) ? ['ui.worker.ts'] : [])],
     plugins: [{ name: 'node-sdk-boundary', setup(builder) {
-      builder.onResolve({ filter: /^@wangcai\/sdk$/ }, () => ({ errors: [{ text: '@wangcai/sdk is only available in main.ts' }] }));
+      builder.onResolve({ filter: /^@lengmoxxl\/sdk$/ }, () => ({ errors: [{ text: '@lengmoxxl/sdk is only available in main.ts' }] }));
     } }],
   });
 }

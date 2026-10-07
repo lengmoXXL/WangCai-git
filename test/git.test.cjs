@@ -24,7 +24,7 @@ test('The build writes the files the app loads, wherever it runs', async () => {
     await build(directory);
     for (const name of ['main.cjs', 'ui.js', 'ui.css', 'ui.worker.js']) assert.equal(existsSync(join(directory, name)), true, name);
     // The SDK stays a require of the running app, so every plugin shares one connection pool.
-    assert.match(readFileSync(join(directory, 'main.cjs'), 'utf8'), /require\("@wangcai\/sdk"\)/);
+    assert.match(readFileSync(join(directory, 'main.cjs'), 'utf8'), /require\("@lengmoxxl\/sdk"\)/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

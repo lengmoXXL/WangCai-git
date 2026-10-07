@@ -4,7 +4,7 @@ const { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync 
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { wangcaiApp, waitForTerminal } = require('./wangcai.cjs');
+const { testEnv, waitForTerminal, wangcaiApp, writeInit } = require('./wangcai.cjs');
 
 const directory = resolve(__dirname, '..');
 
@@ -16,15 +16,10 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
   // The app reads the plugin from this directory, so there has to be a build of it to read.
   if (!existsSync(join(directory, 'main.cjs'))) execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-ui-')));
-  const env = { ...process.env, HOME: home, SHELL: '/bin/bash' };
-  delete env.ELECTRON_RUN_AS_NODE;
+  const env = testEnv(home);
   let desktop;
   try {
-    const config = join(home, '.config/wangcai');
-    mkdirSync(config, { recursive: true });
-    writeFileSync(join(config, 'init.ts'), `export default { workspaces: ${JSON.stringify([{ id: 'terminal-agent' }])}, tabs: ${JSON.stringify([
-      { id: 'files' }, { id: 'terminal' }, { id: 'git', directory },
-    ])} };\n`);
+    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }, 'files', 'terminal'] });
     const repo = join(home, "repo with 'quote");
     mkdirSync(repo);
     const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
@@ -53,7 +48,7 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
     await page.locator('.git-note[role=alert]').filter({ hasText: 'not a git repository' }).waitFor();
     const sessionId = (await page.evaluate(() => window.wangcai.request('terminal-agent', 'config'))).workspaces[0].sessionId;
     await waitForTerminal(page, sessionId);
-    await page.evaluate(({ repo, sessionId }) => window.wangcai.request('terminal-agent', 'pty', { id: 'local', op: 'input', params: { session_id: sessionId, data: `cd '${repo.replaceAll("'", "'\\''")}'\r` } }), { repo, sessionId });
+    await page.evaluate(({ repo, sessionId }) => window.wangcai.request('terminal-agent', 'pty', { op: 'input', sessionId, params: { data: `cd '${repo.replaceAll("'", "'\\''")}'\r` } }), { repo, sessionId });
     await page.locator('.xterm-screen').filter({ hasText: 'repo with' }).waitFor();
     await page.getByRole('button', { name: '刷新 Git' }).click();
     await page.locator('.git-branch').filter({ hasText: 'main' }).waitFor();
@@ -151,11 +146,11 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
     await page.getByRole('button', { name: '新建侧栏标签页' }).click();
     await page.locator('#view-menu').getByRole('button', { name: 'Git', exact: true }).click();
     assert.equal(await page.locator('.sidebar-tab:visible').count(), 1);
-    await page.evaluate(({ home, sessionId }) => window.wangcai.request('terminal-agent', 'pty', { id: 'local', op: 'input', params: { session_id: sessionId, data: `cd '${home}'\r` } }), { home, sessionId });
+    await page.evaluate(({ home, sessionId }) => window.wangcai.request('terminal-agent', 'pty', { op: 'input', sessionId, params: { data: `cd '${home}'\r` } }), { home, sessionId });
     await page.getByRole('button', { name: '刷新 Git' }).click();
     await page.locator('.git-note[role=alert]').filter({ hasText: 'not a git repository' }).waitFor();
     // A shell that exits leaves the workspace without a terminal, and the Git tab says so.
-    await page.evaluate((session) => window.wangcai.request('terminal-agent', 'pty', { id: 'local', op: 'input', params: { session_id: session, data: 'exit\r' } }), sessionId);
+    await page.evaluate((session) => window.wangcai.request('terminal-agent', 'pty', { op: 'input', sessionId: session, params: { data: 'exit\r' } }), sessionId);
     await page.getByText('请选择一个已连接的终端', { exact: true }).waitFor();
     assert.deepEqual(errors, []);
   } finally {
@@ -170,15 +165,10 @@ test('the packaged app loads the plugin from the directory init.ts names', { tim
   if (!executable || !existsSync(executable)) { t.skip('the WangCai checkout next to this repository is not packaged'); return; }
   const { _electron: electron } = require(join(app, 'node_modules/playwright'));
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-packaged-')));
-  const env = { ...process.env, HOME: home, SHELL: '/bin/bash' };
-  delete env.ELECTRON_RUN_AS_NODE;
+  const env = testEnv(home);
   let desktop;
   try {
-    const config = join(home, '.config/wangcai');
-    mkdirSync(config, { recursive: true });
-    writeFileSync(join(config, 'init.ts'), `export default { workspaces: ${JSON.stringify([{ id: 'terminal-agent' }])}, tabs: ${JSON.stringify([
-      { id: 'terminal' }, { id: 'git', directory },
-    ])} };\n`);
+    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }, 'terminal'] });
     desktop = await electron.launch({ executablePath: executable, args: [`--user-data-dir=${join(home, 'electron')}`], env });
     const page = await desktop.firstWindow();
     await page.locator('.workspaces').waitFor();
