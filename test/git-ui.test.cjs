@@ -5,11 +5,11 @@ const { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync 
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 const { _electron: electron } = require('playwright-core');
-const { installedApp, linkPlugins, stopServer, testEnv, waitForTerminal, writeInit } = require('./wangcai.cjs');
+const { installedApp, linkPlugins, run, stopServer, testEnv, waitForTerminal, writeInit } = require('./wangcai.cjs');
 
 const directory = resolve(__dirname, '..');
 
-test('Git tab follows terminal cwd and shows one read-only diff at a time', { timeout: 180000 }, async (t) => {
+test('Git tab follows terminal cwd, opens working-tree files, and shows one read-only diff at a time', { timeout: 180000 }, async (t) => {
   const app = installedApp();
   if (!app) { t.skip('the WangCai app is not installed'); return; }
   // The app loads this directory's build, so the test starts from what the source says now.
@@ -20,8 +20,10 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
   try {
     // The workspace the Git tab follows comes from the plugin the installed app already has.
     const plugins = linkPlugins(home);
-    if (!plugins || !existsSync(join(plugins, 'terminal-agent/main.cjs'))) { t.skip('the installed app has no workspace plugin'); return; }
-    writeInit(home, { workspaces: [{ id: 'terminal-agent', directory: join(plugins, 'terminal-agent') }], tabs: [{ id: 'git', directory }] });
+    if (!plugins || !existsSync(join(plugins, 'terminal-agent/main.cjs')) || !existsSync(join(plugins, 'files/main.cjs'))) {
+      t.skip('the installed app has no workspace or files plugin'); return;
+    }
+    writeInit(home, { workspaces: [{ id: 'terminal-agent', directory: join(plugins, 'terminal-agent') }], tabs: [{ id: 'files', directory: join(plugins, 'files') }, { id: 'git', directory }] });
     const repo = join(home, "repo with 'quote");
     mkdirSync(repo);
     const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
@@ -43,9 +45,8 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
     await page.locator('.workspaces').click({ button: 'right' });
     await page.locator('#workspace-row-menu').getByRole('menuitem', { name: '本机', exact: true }).click();
     await page.locator('.git-note[role=alert]').filter({ hasText: 'not a git repository' }).waitFor();
-    const sessionId = (await page.evaluate(() => window.wangcai.request('terminal-agent', 'config'))).workspaces[0].sessionId;
-    await waitForTerminal(page, sessionId);
-    await page.evaluate(({ repo, sessionId }) => window.wangcai.request('terminal-agent', 'pty', { op: 'input', sessionId, params: { data: `cd '${repo.replaceAll("'", "'\\''")}'\r` } }), { repo, sessionId });
+    await waitForTerminal(page);
+    await run(page, `cd '${repo.replaceAll("'", "'\\''")}'`);
     await page.locator('.xterm-screen').filter({ hasText: 'repo with' }).waitFor();
     await page.getByRole('button', { name: '刷新 Git' }).click();
     await page.locator('.git-branch').filter({ hasText: 'main' }).waitFor();
@@ -59,6 +60,8 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
     assert.deepEqual(groups.arrows, ['"▾"', '"▾"'], 'every file group carries its triangle');
     assert.deepEqual(groups.parts, ['details', 'details', 'git-gap', 'git-history'], 'the divider sits between the files and the commits');
     assert.deepEqual(groups.divider, [1, '0'], 'the divider never shrinks away');
+    const openFile = page.getByRole('button', { name: '打开文件', exact: true });
+    assert.equal(await openFile.isDisabled(), true, 'opening a file requires a selection');
     const staged = page.locator('.git-rail > details').filter({ has: page.locator('summary', { hasText: /^已暂存/ }) });
     await staged.locator('.git-file').first().click();
     await page.locator('.git-editor .view-lines').filter({ hasText: 'STAGED_VALUE' }).waitFor();
@@ -74,6 +77,12 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
     }
     assert.equal(font.fontSize, '12px');
     assert.match(font.fontFamily, /^"DejaVuSansM Nerd Font Mono"/);
+    assert.equal(await openFile.isEnabled(), true);
+    await openFile.click();
+    const filePreview = page.locator('.sidebar-panel[data-plugin=files]:visible');
+    await filePreview.locator('.code-preview .view-lines').filter({ hasText: 'WORKTREE_VALUE' }).waitFor();
+    assert.equal(await filePreview.locator('.preview-path').getAttribute('title'), join(repo, 'sample.ts'));
+    await page.locator('.sidebar-tab:has([aria-selected=true]) .close-tab').click();
     const worktree = page.locator('.git-rail > details').filter({ has: page.locator('summary', { hasText: /^未暂存/ }) });
     await worktree.locator('.git-file').first().click();
     await page.locator('.git-editor .editor.modified .view-lines').filter({ hasText: 'WORKTREE_VALUE' }).waitFor();
@@ -139,6 +148,7 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
     await page.locator('.git-pane').click({ button: 'right', position: { x: 60, y: 60 } });
     await page.getByRole('menuitem', { name: '关闭' }).click();
     assert.equal(await page.locator('.git-pane').count(), 0);
+    assert.equal(await openFile.isDisabled(), true, 'closing the diff clears the file selection');
     await page.getByText('选择文件查看 diff', { exact: true }).waitFor();
     assert.equal((await page.locator('.git-commit-row').first().textContent()).includes('main'), false);
     assert.equal(await page.locator('.git-tip').count(), 0, 'the detail card only exists while a commit row is hovered');
@@ -150,14 +160,26 @@ test('Git tab follows terminal cwd and shows one read-only diff at a time', { ti
     assert.equal(await page.locator('.git-tip').count(), 0);
     await page.locator('.git-commit-files .git-file').first().click();
     await page.locator('.git-editor .view-lines').filter({ hasText: 'ORIGINAL_VALUE' }).waitFor();
+    await openFile.click();
+    await filePreview.locator('.code-preview .view-lines').filter({ hasText: 'WORKTREE_VALUE' }).waitFor();
+    assert.equal(await filePreview.locator('.preview-path').getAttribute('title'), join(repo, 'sample.ts'), 'history opens the current working-tree file');
+    await page.locator('.sidebar-tab:has([aria-selected=true]) .close-tab').click();
+    writeFileSync(join(repo, 'deleted.ts'), 'const deleted = true;\n');
+    git('add', 'deleted.ts'); git('commit', '-qm', 'add file to delete');
+    rmSync(join(repo, 'deleted.ts'));
+    await page.getByRole('button', { name: '刷新 Git' }).click();
+    await page.locator('.git-rail > details .git-file').filter({ hasText: 'deleted.ts', has: page.locator('.git-status-D') }).click();
+    await page.getByRole('region', { name: 'Diff deleted.ts', exact: true }).waitFor();
+    assert.equal(await openFile.isDisabled(), true, 'deleted files cannot be opened');
+    assert.equal(await openFile.getAttribute('title'), '文件已删除');
     await page.getByRole('button', { name: '新建侧栏标签页' }).click();
     await page.locator('#view-menu').getByRole('button', { name: 'Git', exact: true }).click();
     assert.equal(await page.locator('.sidebar-tab:visible').count(), 1);
-    await page.evaluate(({ home, sessionId }) => window.wangcai.request('terminal-agent', 'pty', { op: 'input', sessionId, params: { data: `cd '${home}'\r` } }), { home, sessionId });
+    await run(page, `cd '${home}'`);
     await page.getByRole('button', { name: '刷新 Git' }).click();
     await page.locator('.git-note[role=alert]').filter({ hasText: 'not a git repository' }).waitFor();
     // A shell that exits leaves the workspace without a terminal, and the Git tab says so.
-    await page.evaluate((session) => window.wangcai.request('terminal-agent', 'pty', { op: 'input', sessionId: session, params: { data: 'exit\r' } }), sessionId);
+    await run(page, 'exit');
     await page.getByText('请选择一个已连接的终端', { exact: true }).waitFor();
     assert.deepEqual(errors, []);
   } finally {

@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import * as monaco from 'monaco-editor/editor/editor.api.js';
 import 'monaco-editor/basic-languages/monaco.contribution.js';
 import 'monaco-editor/editor/contrib/find/browser/findController.js';
-import type { Theme, WorkspaceActive } from '@lengmoxxl/sdk';
+import type { FileClick, Theme, WorkspaceActive } from '@lengmoxxl/sdk';
 import type { TabRecord, UiContext } from '@lengmoxxl/sdk/channel';
 import type { Commit, Comparison, Diff, Font, GitFile, History, Overview, Settings, Stage } from './shared';
 import './style.css';
@@ -66,17 +66,25 @@ function DiffEditor({ diff, path, reading, wrap }: { diff: Diff; path: string; r
     wordWrap: wrap ? 'on' : 'off',
   } as const;
   useEffect(() => {
-    const name = path.split('/').pop()!;
+    // Each plugin bundles Monaco; its theme rules must stay inside its own editor.
+    const shadow = element.current!.shadowRoot ?? element.current!.attachShadow({ mode: 'open' });
+    const stylesheet = document.createElement('link');
+    stylesheet.rel = 'stylesheet';
+    stylesheet.href = new URL('./ui.css', import.meta.url).href;
+    const container = document.createElement('div');
+    container.style.height = '100%';
+    shadow.replaceChildren(stylesheet, container);
     const size = font.size;
-    const language = monaco.languages.getLanguages().find(item => item.filenames?.includes(name) || item.extensions?.some(extension => name.endsWith(extension)))?.id ?? 'plaintext';
-    const original = monaco.editor.createModel(diff.oldText, language);
-    const modified = monaco.editor.createModel(diff.newText, language);
-    const view = monaco.editor.createDiffEditor(element.current!, {
+    const view = monaco.editor.createDiffEditor(container, {
       theme: 'wangcai', readOnly: true, domReadOnly: true,
       automaticLayout: true, scrollBeyondLastLine: false,
       renderOverviewRuler: false, hideUnchangedRegions: { enabled: true },
       ...options, fontSize: size, lineHeight: font.lineHeight ? Math.round(size * font.lineHeight) : 0, fontFamily: font.family, lineNumbersMinChars: 3, contextmenu: false,
     });
+    const name = path.split('/').pop()!;
+    const language = monaco.languages.getLanguages().find(item => item.filenames?.includes(name) || item.extensions?.some(extension => name.endsWith(extension)))?.id ?? 'plaintext';
+    const original = monaco.editor.createModel(diff.oldText, language);
+    const modified = monaco.editor.createModel(diff.newText, language);
     view.setModel({ original, modified });
     view.getOriginalEditor().updateOptions({ glyphMargin: false });
     editor.current = view;
@@ -215,6 +223,13 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
       </button>
       <button className="git-icon" aria-label="长行折行" aria-pressed={wrap} onClick={() => setWrap(!wrap)}>
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h8a2 2 0 1 1 0 4H8M2.5 12h3"/><path d="M9.4 10.6 8 12l1.4 1.4"/></svg>
+      </button>
+      <button className="git-icon" aria-label="打开文件" title={comparison?.status === 'D' ? '文件已删除' : '打开文件（工作区版本）'}
+        disabled={!overview || !comparison || comparison.status === 'D'} onClick={() => void context.global.publish('onclick', {
+          type: 'file', machine: terminal.machine,
+          path: `${overview!.root === '/' ? '' : overview!.root}/${comparison!.path}`,
+        } satisfies FileClick).catch((error: Error) => setError(error.message))}>
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M9 13.5H2.5v-11h5l3 3V7M7.5 2.5v3h3M7 10h7m-3-3 3 3-3 3"/></svg>
       </button>
       <button className="git-icon" aria-label="刷新 Git" disabled={loading} onClick={() => setRefresh(value => value + 1)}>
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 6.2A5 5 0 1 0 13 9"/><path d="M13.2 3v3.4h-3.4"/></svg>

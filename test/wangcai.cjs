@@ -44,11 +44,10 @@ exports.stopServer = (bundle, env) => {
 };
 
 /** Waits until a workspace takes input; the terminal attaches a moment after its pane appears. */
-exports.waitForTerminal = async (page, sessionId) => {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const attached = await page.evaluate((session) => window.wangcai.request('terminal-agent', 'pty', { op: 'input', sessionId: session, params: { data: '' } }).then(() => true, () => false), sessionId);
-    if (attached) return;
-    await page.waitForTimeout(50);
-  }
-  throw new Error('the terminal never attached');
+exports.waitForTerminal = (page) => page.waitForFunction(() => (document.querySelector('.terminal-pane.active .xterm-rows')?.textContent ?? '').trim().length > 0);
+
+exports.run = async (page, line) => {
+  await page.locator('.terminal-pane.active .xterm-helper-textarea').click();
+  await page.keyboard.type(line);
+  await page.keyboard.press('Enter');
 };
