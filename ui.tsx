@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, UIEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as monaco from 'monaco-editor/editor/editor.api.js';
 import 'monaco-editor/features/codicon/register.js';
@@ -175,7 +175,6 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [older, setOlder] = useState(false);
   const [opened, setOpened] = useState<string | null>(null);
   const [comparison, setComparison] = useState<Comparison>();
   const [reading, setReading] = useState<Reading>('auto');
@@ -190,9 +189,10 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
   const clampWidth = (requested: number) => Math.round(Math.max(railMinimum, Math.min(railMaximum, requested)));
   const generation = useRef(0);
   const repositoryRoot = useRef('');
+  const paging = useRef(false);
   useEffect(() => {
     const current = ++generation.current;
-    setLoading(true); setOlder(false); setError('');
+    setLoading(true); paging.current = false; setError('');
     void context.ui.request<Overview>('overview', { terminal }).then(value => {
       if (current !== generation.current) return;
       if (repositoryRoot.current !== value.root) { setComparison(undefined); setOpened(value.commits[0]?.sha ?? null); }
@@ -210,6 +210,19 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
     window.addEventListener('keydown', escape);
     return () => { window.removeEventListener('mousedown', dismiss); window.removeEventListener('keydown', escape); };
   }, [menu]);
+  const loadOlder = () => {
+    if (!overview?.hasMore || loading || paging.current) return;
+    const current = generation.current;
+    paging.current = true;
+    void context.ui.request<History>('history', { terminal, root: overview.root, head: overview.head, skip: overview.commits.length }).then(value => {
+      if (current === generation.current) setOverview(previous => ({ ...previous!, commits: [...previous!.commits, ...value.commits], hasMore: value.hasMore }));
+    }).catch((error: Error) => { if (current === generation.current) setError(error.message); })
+      .finally(() => { paging.current = false; });
+  };
+  const endReached = (event: UIEvent<HTMLElement>) => {
+    const rail = event.currentTarget;
+    if (rail.scrollHeight - rail.scrollTop - rail.clientHeight <= 80) loadOlder();
+  };
   return <section className="git-page" aria-label="Git history" data-reading={reading}>
     <header className="git-toolbar">
       <span className="git-branch" title={overview?.upstream}>{overview?.branch}
@@ -241,7 +254,7 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
     {error ? <div className="git-note" role="alert">{error}</div> : !overview ? <div className="git-note">正在读取 Git…</div>
       : <div className="git-body" ref={body} data-rail={rail ? 'shown' : 'hidden'} style={{ '--rail-width': `${railWidth}px` } as CSSProperties}>
         <div className="git-rail-wrap">
-          <nav className="git-rail" aria-label="Git 改动与历史">
+          <nav className="git-rail" aria-label="Git 改动与历史" onScroll={endReached} onWheel={endReached}>
             {!overview.changes.length && <div className="git-note">工作区干净</div>}
             {(Object.entries(stages) as [Stage, string][]).map(([stage, title]) => {
               const files = overview.changes.filter(file => file.stage === stage);
@@ -255,14 +268,6 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
               {overview.commits.map(commit => <CommitRow key={`${overview.root}:${commit.sha}`} commit={commit} context={context} terminal={terminal} root={overview.root}
                 selected={opened === commit.sha} toggle={() => setOpened(opened === commit.sha ? null : commit.sha)} select={setComparison} />)}
               {!overview.commits.length && <div className="git-note">暂无提交</div>}
-              {overview.hasMore && <button className="git-more" disabled={older || loading} onClick={() => {
-                const current = generation.current;
-                setOlder(true);
-                void context.ui.request<History>('history', { terminal, root: overview.root, head: overview.head, skip: overview.commits.length }).then(value => {
-                  if (current === generation.current) setOverview(previous => ({ ...previous!, commits: [...previous!.commits, ...value.commits], hasMore: value.hasMore }));
-                }).catch((error: Error) => { if (current === generation.current) setError(error.message); })
-                  .finally(() => { if (current === generation.current) setOlder(false); });
-              }}>{older ? '正在读取…' : '加载更多提交'}</button>}
             </div>
           </nav>
           <div className="git-divider" role="separator" aria-orientation="vertical" aria-label="调整 Git 列表宽度" tabIndex={0}

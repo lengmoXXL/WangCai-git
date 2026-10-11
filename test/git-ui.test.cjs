@@ -216,3 +216,58 @@ test('Git tab follows terminal cwd, opens working-tree files, and shows one read
     rmSync(home, { recursive: true, force: true });
   }
 });
+test('Git history loads the next page when the rail is scrolled to its end', { timeout: 180000 }, async (t) => {
+  const app = installedApp();
+  if (!app) { t.skip('the WangCai app is not installed'); return; }
+  execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-page-')));
+  const env = testEnv(home);
+  let desktop;
+  try {
+    const plugins = linkPlugins(home);
+    if (!plugins || !existsSync(join(plugins, 'terminal-agent/main.cjs'))) {
+      t.skip('the installed app has no workspace plugin'); return;
+    }
+    writeInit(home, { workspaces: [{ id: 'terminal-agent', directory: join(plugins, 'terminal-agent') }], tabs: [{ id: 'git', directory }] });
+    // More commits than the 50 the first page holds, so the rail has a second page to reach.
+    const total = 55;
+    const repo = join(home, 'paging');
+    mkdirSync(repo);
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
+    git('init', '-q', '-b', 'main'); git('config', 'user.name', 'UI Test'); git('config', 'user.email', 'ui@test.local');
+    for (let index = 0; index < total; index++) {
+      writeFileSync(join(repo, 'count.txt'), `${index}\n`);
+      git('add', 'count.txt'); git('commit', '-qm', `commit ${index}`);
+    }
+    desktop = await electron.launch({ executablePath: app.executable, args: [`--user-data-dir=${join(home, 'electron')}`], env });
+    const page = await desktop.firstWindow();
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+    await page.locator('.workspaces').waitFor();
+    await page.getByRole('button', { name: '切换右侧栏' }).click();
+    await page.getByRole('button', { name: '新建侧栏标签页' }).click();
+    await page.locator('#view-menu').getByRole('button', { name: 'Git', exact: true }).click();
+    await page.getByText('请选择一个已连接的终端', { exact: true }).waitFor();
+    await page.locator('.workspaces').click({ button: 'right' });
+    await page.locator('#workspace-row-menu').getByRole('menuitem', { name: '本机', exact: true }).click();
+    await waitForTerminal(page);
+    await run(page, `cd '${repo}'`);
+    await page.locator('.xterm-screen').filter({ hasText: 'paging' }).waitFor();
+    await page.getByRole('button', { name: '刷新 Git' }).click();
+    await page.locator('.git-branch').filter({ hasText: 'main' }).waitFor();
+    const rows = page.locator('.git-commit-row');
+    assert.equal(await rows.count(), 50, 'the first page stops at 50 commits');
+    const rail = await page.locator('.git-rail').boundingBox();
+    await page.mouse.move(rail.x + rail.width / 2, rail.y + rail.height / 2);
+    // Only the wheel touches the rail from here on: reaching its end is what fetches the second page.
+    for (let attempt = 0; attempt < 20 && await rows.count() === 50; attempt++) await page.mouse.wheel(0, 400);
+    assert.equal(await rows.count(), total, 'scrolling to the end appends the older commits');
+    assert.match(await rows.last().textContent(), /commit 0/, 'the appended page keeps the history order');
+    assert.deepEqual(errors, []);
+  } finally {
+    await desktop?.close();
+    stopServer(app.bundle, env);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
