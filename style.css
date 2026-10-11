@@ -32,7 +32,7 @@
 .git-page summary::before { content: '▾'; color: var(--wc-muted); font-size: 9px; }
 .git-page details:not([open]) summary::before { content: '▸'; }
 .git-page summary small { color: var(--wc-muted); font-variant-numeric: tabular-nums; }
-.git-file { display: flex; align-items: center; gap: 6px; min-width: 0; height: 22px; padding: 0 10px 0 24px; text-align: left; }
+.git-file { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 22px; padding: 0 10px 0 24px; text-align: left; }
 .git-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-dir { color: var(--wc-muted); }
 .git-status { flex-shrink: 0; width: 11px; color: var(--wc-yellow); font-family: monospace; text-align: center; }
@@ -43,7 +43,9 @@
 .git-commit-row > span:first-child { color: var(--wc-muted); font-size: 9px; }
 .git-subject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-who { flex-shrink: 0; color: var(--wc-muted); }
-.git-tip { position: fixed; pointer-events: none; z-index: 6; padding: 6px 9px; border: 1px solid var(--wc-border); border-radius: 6px; background: var(--wc-overlay); box-shadow: 0 10px 26px #0007; color: var(--wc-muted); font-size: 11px; line-height: 1.65; }
+.git-tip { position: fixed; z-index: 6; padding: 6px 9px; border: 1px solid var(--wc-border); border-radius: 6px; background: var(--wc-overlay); box-shadow: 0 10px 26px #0007; color: var(--wc-muted); font-size: 11px; line-height: 1.65; }
+/* Cover the 8px gap plus the border so the hover region stays connected. */
+.git-tip::before { content: ''; position: absolute; top: -1px; bottom: -1px; right: 100%; width: 9px; }
 .git-tip b { color: var(--wc-foreground); font-weight: 400; }
 .git-tip .mono { font-family: monospace; }
 .git-commit-files { padding-bottom: 4px; }

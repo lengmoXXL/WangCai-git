@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as monaco from 'monaco-editor/editor/editor.api.js';
+import 'monaco-editor/features/codicon/register.js';
 import 'monaco-editor/basic-languages/monaco.contribution.js';
 import 'monaco-editor/editor/contrib/find/browser/findController.js';
 import type { FileClick, Theme, WorkspaceActive } from '@lengmoxxl/sdk';
@@ -145,20 +146,22 @@ function CommitRow({ commit, context, terminal, root, selected, toggle, select }
     node.style.top = `${Math.max(8, Math.min(tip.top, window.innerHeight - node.offsetHeight - 8))}px`;
   }, [tip]);
   return <>
-    <button className="git-commit-row" aria-expanded={selected} onClick={toggle} onMouseEnter={(event) => {
-      const rect = event.currentTarget.getBoundingClientRect();
-      setTip({ top: rect.top, left: rect.right + 8 });
-    }} onMouseLeave={() => setTip(undefined)}>
-      <span>{selected ? '▾' : '▸'}</span>
-      <span className="git-subject">{commit.subject}</span>
-      <span className="git-who">{commit.author}</span>
-    </button>
-    {tip && <div className="git-tip" ref={tipElement}>
-      <div><b>{commit.subject}</b></div>
-      <div className="mono">{commit.sha}</div>
-      <div>{commit.author} · {new Date(commit.time * 1000).toLocaleString()}</div>
-      <div>{commit.refs.map(ref => ref.replace(/refs\/(heads|remotes|tags)\//g, '')).join(' · ') || '没有引用'}</div>
-    </div>}
+    <div onMouseLeave={() => setTip(undefined)}>
+      <button className="git-commit-row" aria-expanded={selected} onClick={toggle} onMouseEnter={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        setTip({ top: rect.top, left: rect.right + 8 });
+      }}>
+        <span>{selected ? '▾' : '▸'}</span>
+        <span className="git-subject">{commit.subject}</span>
+        <span className="git-who">{commit.author}</span>
+      </button>
+      {tip && <div className="git-tip" ref={tipElement}>
+        <div><b>{commit.subject}</b></div>
+        <div className="mono">{commit.sha}</div>
+        <div>{commit.author} · {new Date(commit.time * 1000).toLocaleString()}</div>
+        <div>{commit.refs.map(ref => ref.replace(/refs\/(heads|remotes|tags)\//g, '')).join(' · ') || '没有引用'}</div>
+      </div>}
+    </div>
     {selected && <div className="git-commit-files">
       {error ? <div className="git-note" role="alert">{error}</div> : !files ? <div className="git-note">正在读取…</div>
         : files.length ? files.map(file => <FileRow key={file.path} file={file} select={() => select({ ...file, source: 'commit', rev: commit.sha })} />)
