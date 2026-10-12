@@ -44,7 +44,7 @@ test('Git tab follows terminal cwd, opens working-tree files, and shows one read
     await page.locator('#view-menu').getByRole('button', { name: 'Git', exact: true }).click();
     await page.getByText('请选择一个已连接的终端', { exact: true }).waitFor();
     await page.locator('.workspaces').click({ button: 'right' });
-    await page.locator('#workspace-row-menu').getByRole('menuitem', { name: '本机', exact: true }).click();
+    await page.locator('#workspace-row-menu').getByRole('menuitem', { name: '新建 本机', exact: true }).click();
     await page.locator('.git-note[role=alert]').filter({ hasText: 'not a git repository' }).waitFor();
     await waitForTerminal(page);
     await run(page, `cd '${repo.replaceAll("'", "'\\''")}'`);
@@ -250,7 +250,7 @@ test('Git history loads the next page when the rail is scrolled to its end', { t
     await page.locator('#view-menu').getByRole('button', { name: 'Git', exact: true }).click();
     await page.getByText('请选择一个已连接的终端', { exact: true }).waitFor();
     await page.locator('.workspaces').click({ button: 'right' });
-    await page.locator('#workspace-row-menu').getByRole('menuitem', { name: '本机', exact: true }).click();
+    await page.locator('#workspace-row-menu').getByRole('menuitem', { name: '新建 本机', exact: true }).click();
     await waitForTerminal(page);
     await run(page, `cd '${repo}'`);
     await page.locator('.xterm-screen').filter({ hasText: 'paging' }).waitFor();
