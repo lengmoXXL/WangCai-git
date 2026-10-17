@@ -95,18 +95,37 @@ function DiffEditor({ diff, path, reading, wrap }: { diff: Diff; path: string; r
   return <div className="git-editor" ref={element} />;
 }
 
-function DiffPane({ context, terminal, root, comparison, reading, wrap, refresh }: {
-  context: UiContext; terminal: WorkspaceActive; root: string; comparison: Comparison; reading: Reading; wrap: boolean; refresh: number;
+const watch = (context: UiContext, terminal: WorkspaceActive, holder: string, paths: string[], act: () => void) => {
+  // The plugin can be disposed before either request lands, and the machine can be gone; neither is worth a pageerror.
+  void context.ui.request('watch', { holder, machine: terminal.machine, paths }).catch(() => undefined);
+  const off = context.ui.subscribe<string>('changed', (path) => { if (paths.includes(path)) act(); });
+  return () => { off(); void context.ui.request('watch', { holder, machine: terminal.machine, paths: [] }).catch(() => undefined); };
+};
+
+// A repository root and a path inside it, as the machine's absolute path: '/' is the one root that adds nothing.
+const absolute = (root: string, path: string) => `${root === '/' ? '' : root}/${path}`;
+
+function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, revision }: {
+  context: UiContext; terminal: WorkspaceActive; holder: string; root: string; comparison: Comparison; reading: Reading; wrap: boolean; revision: number;
 }) {
   const [diff, setDiff] = useState<Diff>();
   const [error, setError] = useState('');
+  // The pane reads what it shows when it opens, and again when the repository is read again.
+  const read = () => {
+    void context.ui.request<Diff>('diff', { terminal, root, comparison }).then(value => {
+      setError('');
+      // A read that finds what the pane already holds leaves it as it is, so the editor on screen is not built again.
+      setDiff(previous => previous && previous.oldText === value.oldText && previous.newText === value.newText
+        && previous.notice === value.notice ? previous : value);
+    }).catch((problem: Error) => setError(problem.message));
+  };
+  useEffect(read, [context, terminal, root, comparison, revision]);
+  // Writing the file changes what the pane holds while the repository stays as it is, so that file is watched: what a
+  // commit or the index holds is not the machine's file, and a deleted file has nothing to watch.
   useEffect(() => {
-    let alive = true;
-    setDiff(undefined); setError('');
-    void context.ui.request<Diff>('diff', { terminal, root, comparison }).then(value => { if (alive) setDiff(value); })
-      .catch((error: Error) => { if (alive) setError(error.message); });
-    return () => { alive = false; };
-  }, [context, terminal, root, comparison, refresh]);
+    const inWorktree = ['unstaged', 'untracked', 'conflicted'].includes(comparison.source) && comparison.status !== 'D';
+    return inWorktree ? watch(context, terminal, holder, [absolute(root, comparison.path)], read) : undefined;
+  }, [context, terminal, holder, root, comparison]);
   if (error) return <div className="git-note" role="alert">{error}</div>;
   if (!diff) return <div className="git-note">正在读取 diff…</div>;
   if (diff.notice) return <div className="git-note">{diff.notice}</div>;
@@ -170,10 +189,14 @@ function CommitRow({ commit, context, terminal, root, selected, toggle, select }
   </>;
 }
 
-function Repository({ context, terminal, activation }: { context: UiContext; terminal: WorkspaceActive; activation: number }) {
+// How long an open page waits between two reads of the repository, when `autoRefresh` is on.
+const pollMilliseconds = 3000;
+
+function Repository({ context, terminal, holder, activation, autoRefresh }: { context: UiContext; terminal: WorkspaceActive; holder: string; activation: number; autoRefresh: boolean }) {
   const [overview, setOverview] = useState<Overview>();
   const [error, setError] = useState('');
-  const [refresh, setRefresh] = useState(0);
+  const [toolbarRead, setToolbarRead] = useState(0);
+  const [revision, setRevision] = useState(0);
   const [loading, setLoading] = useState(false);
   const [opened, setOpened] = useState<string | null>(null);
   const [comparison, setComparison] = useState<Comparison>();
@@ -189,19 +212,43 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
   const clampWidth = (requested: number) => Math.round(Math.max(railMinimum, Math.min(railMaximum, requested)));
   const generation = useRef(0);
   const repositoryRoot = useRef('');
+  const busy = useRef(false); // a poll skips the read in flight instead of piling up
+  const lastRead = useRef(''); // what the last read found, as the text the next one is compared against
   const paging = useRef(false);
   useEffect(() => {
     const current = ++generation.current;
     setLoading(true); paging.current = false; setError('');
-    void context.ui.request<Overview>('overview', { terminal }).then(value => {
-      if (current !== generation.current) return;
-      if (repositoryRoot.current !== value.root) { setComparison(undefined); setOpened(value.commits[0]?.sha ?? null); }
-      repositoryRoot.current = value.root;
-      setOverview(value);
-    }).catch((error: Error) => { if (current === generation.current) { setOverview(undefined); setComparison(undefined); setError(error.message); } })
-      .finally(() => { if (current === generation.current) setLoading(false); });
-    return () => { generation.current++; };
-  }, [context, terminal, refresh, activation]);
+    // The page follows the machine by asking git for the repository again: the index holds each file's stat data, so a
+    // repeated status reads what changed instead of the whole tree. A read that finds the repository the last one did
+    // is left alone, so a poll of an unchanged tree redraws nothing.
+    const read = (forced: boolean) => {
+      if (!forced && busy.current) return;
+      busy.current = true;
+      void context.ui.request<Overview>('overview', { terminal }).then(value => {
+        if (current !== generation.current) return;
+        const text = JSON.stringify(value);
+        if (!forced && text === lastRead.current) return;
+        lastRead.current = text;
+        if (repositoryRoot.current !== value.root) { setComparison(undefined); setOpened(value.commits[0]?.sha ?? null); }
+        repositoryRoot.current = value.root;
+        setOverview(value);
+        setRevision(count => count + 1);
+        setError('');
+      }).catch((error: Error) => {
+        if (current !== generation.current) return;
+        // A read that failed has nothing to compare against, so the page is drawn again by the read that works.
+        lastRead.current = '';
+        setOverview(undefined); setComparison(undefined); setError(error.message);
+      })
+        .finally(() => {
+          busy.current = false;
+          if (forced && current === generation.current) setLoading(false);
+        });
+    };
+    read(true);
+    const timer = autoRefresh ? setInterval(() => read(false), pollMilliseconds) : undefined;
+    return () => { clearInterval(timer); generation.current++; };
+  }, [context, terminal, toolbarRead, activation, autoRefresh]);
   useEffect(() => {
     if (!menu) return;
     const dismiss = (event: MouseEvent) => { if (!(event.target as HTMLElement).closest('.git-menu')) setMenu(undefined); };
@@ -243,11 +290,11 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
       <button className="git-icon" aria-label="打开文件" title={comparison?.status === 'D' ? '文件已删除' : '打开文件（工作区版本）'}
         disabled={!overview || !comparison || comparison.status === 'D'} onClick={() => void context.global.publish('onclick', {
           type: 'file', machine: terminal.machine,
-          path: `${overview!.root === '/' ? '' : overview!.root}/${comparison!.path}`,
+          path: absolute(overview!.root, comparison!.path),
         } satisfies FileClick).catch((error: Error) => setError(error.message))}>
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M9 13.5H2.5v-11h5l3 3V7M7.5 2.5v3h3M7 10h7m-3-3 3 3-3 3"/></svg>
       </button>
-      <button className="git-icon" aria-label="刷新 Git" disabled={loading} onClick={() => setRefresh(value => value + 1)}>
+      <button className="git-icon" aria-label="刷新 Git" disabled={loading} onClick={() => setToolbarRead(value => value + 1)}>
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 6.2A5 5 0 1 0 13 9"/><path d="M13.2 3v3.4h-3.4"/></svg>
       </button>
     </header>
@@ -280,7 +327,7 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
         <div className="git-board">
           {comparison ? <section className="git-pane" aria-label={`Diff ${comparison.path}`}
             onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY }); }}>
-            <DiffPane context={context} terminal={terminal} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} refresh={refresh + activation} />
+            <DiffPane key={JSON.stringify(comparison)} context={context} terminal={terminal} holder={holder} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} revision={revision} />
           </section> : <div className="git-note">选择文件查看 diff</div>}
         </div>
       </div>}
@@ -290,7 +337,7 @@ function Repository({ context, terminal, activation }: { context: UiContext; ter
   </section>;
 }
 
-function GitView({ context, activation, workspaceId }: { context: UiContext; activation: number; workspaceId?: string }) {
+function GitView({ context, activation, workspaceId, autoRefresh }: { context: UiContext; activation: number; workspaceId?: string; autoRefresh: boolean }) {
   const [terminal, setTerminal] = useState<WorkspaceActive | null>(null);
   useEffect(() => {
     const off = context.global.subscribe<WorkspaceActive | null>('workspace:active', (value) => {
@@ -301,16 +348,17 @@ function GitView({ context, activation, workspaceId }: { context: UiContext; act
     return off;
   }, [context, activation, workspaceId]);
   if (!terminal) return <div className="git-note">请选择一个已连接的终端</div>;
-  return <Repository key={JSON.stringify(terminal)} context={context} terminal={terminal} activation={activation} />;
+  return <Repository key={JSON.stringify(terminal)} context={context} terminal={terminal} activation={activation} holder={workspaceId ?? ''} autoRefresh={autoRefresh} />;
 }
 
 export function open(context: UiContext, record?: TabRecord) {
   const workspaceId = record?.workspaceId ?? activeWorkspaceId;
+  const profile: Settings = context.host.config;
   context.host.tabs({ id: 'history', title: 'Git', workspaceId, mount(container: HTMLElement) {
     container.style.fontFamily = font.family;
     const root = createRoot(container);
     let activation = 0;
-    return { onSelect: () => root.render(<GitView context={context} activation={++activation} workspaceId={workspaceId} />), dispose: () => root.unmount() };
+    return { onSelect: () => root.render(<GitView context={context} activation={++activation} workspaceId={workspaceId} autoRefresh={profile.autoRefresh} />), dispose: () => root.unmount() };
   } });
 }
 

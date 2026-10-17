@@ -2,7 +2,7 @@ import type { Profile, WorkspaceActive } from '@lengmoxxl/sdk';
 
 // The config this plugin accepts: main.ts declares a schema for the same fields.
 export type Font = { family: string; size: number; lineHeight?: number };
-export type Settings = Profile & { font: Font };
+export type Settings = Profile & { font: Font; autoRefresh: boolean };
 
 export interface GitFile { path: string; oldPath?: string; status: string }
 export type Stage = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
@@ -28,4 +28,10 @@ export interface GitRequest {
   skip?: number;
   rev?: string;
   comparison?: Comparison;
+}
+/** An empty path list gives up what that tab watched before. */
+export interface WatchRequest {
+  holder: string;
+  machine: WorkspaceActive['machine'];
+  paths: string[];
 }

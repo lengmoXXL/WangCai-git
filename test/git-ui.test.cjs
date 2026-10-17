@@ -1,29 +1,22 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } = require('node:fs');
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, statSync, copyFileSync, utimesSync, renameSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
-const { _electron: electron } = require('playwright-core');
-const { installedApp, linkPlugins, run, stopServer, testEnv, waitForTerminal, writeInit } = require('./wangcai.cjs');
+const { launchApp, openGitTab, run, stopServer, testEnv, trackErrors, waitForTerminal, writeInit } = require('./wangcai.cjs');
 
 const directory = resolve(__dirname, '..');
 
-test('Git tab follows terminal cwd, opens working-tree files, and shows one read-only diff at a time', { timeout: 180000 }, async (t) => {
-  const app = installedApp();
-  if (!app) { t.skip('the WangCai app is not installed'); return; }
+test('Git tab follows terminal cwd, opens working-tree files, and shows one read-only diff at a time', { timeout: 180000 }, async () => {
   // The app loads this directory's build, so the test starts from what the source says now.
   execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-ui-')));
   const env = testEnv(home);
   let desktop;
   try {
-    // The workspace the Git tab follows comes from the plugin the installed app already has.
-    const plugins = linkPlugins(home);
-    if (!plugins || !existsSync(join(plugins, 'terminal-agent/main.cjs')) || !existsSync(join(plugins, 'files/main.cjs'))) {
-      t.skip('the installed app has no workspace or files plugin'); return;
-    }
-    writeInit(home, { workspaces: [{ id: 'terminal-agent', directory: join(plugins, 'terminal-agent') }], tabs: [{ id: 'files', directory: join(plugins, 'files') }, { id: 'git', directory }] });
+    // The tab follows a workspace, and the plugins beside this repository are what opens a file it shows.
+    writeInit(home, { workspaces: ['terminal-agent'], tabs: ['files', { id: 'git', directory }] });
     const repo = join(home, "repo with 'quote");
     mkdirSync(repo);
     const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
@@ -33,18 +26,10 @@ test('Git tab follows terminal cwd, opens working-tree files, and shows one read
     git('add', '.'); git('commit', '-qm', 'initial UI commit');
     writeFileSync(join(repo, 'sample.ts'), unchanged + 'const value = "STAGED_VALUE";\n'); git('add', '.');
     writeFileSync(join(repo, 'sample.ts'), unchanged + 'const value = "WORKTREE_VALUE";\n');
-    desktop = await electron.launch({ executablePath: app.executable, args: [`--user-data-dir=${join(home, 'electron')}`], env });
+    desktop = await launchApp(home, env);
     const page = await desktop.firstWindow();
-    const errors = [];
-    page.on('pageerror', error => errors.push(error.message));
-    page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
-    await page.locator('.workspaces').waitFor();
-    await page.getByRole('button', { name: '切换右侧栏' }).click();
-    await page.getByRole('button', { name: '新建侧栏标签页' }).click();
-    await page.locator('#view-menu').getByRole('button', { name: 'Git', exact: true }).click();
-    await page.getByText('请选择一个已连接的终端', { exact: true }).waitFor();
-    await page.locator('.workspaces').click({ button: 'right' });
-    await page.locator('#workspace-row-menu').getByRole('menuitem', { name: '新建 本机', exact: true }).click();
+    const errors = trackErrors(page);
+    await openGitTab(page);
     await page.locator('.git-note[role=alert]').filter({ hasText: 'not a git repository' }).waitFor();
     await waitForTerminal(page);
     await run(page, `cd '${repo.replaceAll("'", "'\\''")}'`);
@@ -96,6 +81,10 @@ test('Git tab follows terminal cwd, opens working-tree files, and shows one read
     const worktree = page.locator('.git-rail > details').filter({ has: page.locator('summary', { hasText: /^未暂存/ }) });
     await worktree.locator('.git-file').first().click();
     await page.locator('.git-editor .editor.modified .view-lines').filter({ hasText: 'WORKTREE_VALUE' }).waitFor();
+    // The page polls every three seconds, so the window that follows holds at least one read of an unchanged repository.
+    await page.locator('.git-editor .monaco-diff-editor').first().evaluate((element) => { element.dataset.kept = 'yes'; });
+    await page.waitForTimeout(4500);
+    assert.equal(await page.locator('.git-editor .monaco-diff-editor[data-kept=yes]').count(), 1, 'an unchanged read does not rebuild the diff');
     assert.equal(await page.locator('.git-pane').count(), 1);
     assert.equal(await page.locator('.git-page[data-reading=auto]').count(), 1);
     const reading = page.getByRole('button', { name: /^阅读方式/ });
@@ -200,6 +189,27 @@ test('Git tab follows terminal cwd, opens working-tree files, and shows one read
     await page.getByRole('region', { name: 'Diff deleted.ts', exact: true }).waitFor();
     assert.equal(await openFile.isDisabled(), true, 'deleted files cannot be opened');
     assert.equal(await openFile.getAttribute('title'), '文件已删除');
+    // The page follows the machine on its own: a file written outside it arrives without the refresh button.
+    writeFileSync(join(repo, 'fresh.ts'), 'const fresh = true;\n');
+    await page.locator('.git-rail .git-file').filter({ hasText: 'fresh.ts' }).waitFor();
+    // The file the pane shows is watched: writing it changes the diff while the repository stays as it is.
+    await page.locator('.git-rail .git-file').filter({ hasText: 'fresh.ts' }).click();
+    await page.locator('.git-editor .view-lines').filter({ hasText: 'fresh = true' }).waitFor();
+    writeFileSync(join(repo, 'fresh.ts'), 'const fresh = "LIVE_TEXT";\n');
+    await page.locator('.git-editor .view-lines').filter({ hasText: 'LIVE_TEXT' }).waitFor();
+    // A clean entry whose stat data is stale is what a `git status` would otherwise write back (GIT_OPTIONAL_LOCKS=0),
+    // so the file is replaced by a copy of itself, same content and same mtime, whose inode the index does not know.
+    git('add', '-A');
+    const file = statSync(join(repo, 'fresh.ts'));
+    copyFileSync(join(repo, 'fresh.ts'), join(repo, 'fresh.copy'));
+    utimesSync(join(repo, 'fresh.copy'), file.atime, file.mtime);
+    renameSync(join(repo, 'fresh.copy'), join(repo, 'fresh.ts'));
+    const index = statSync(join(repo, '.git/index'));
+    await page.getByRole('button', { name: '刷新 Git' }).click();
+    // Longer than the three seconds the page waits between its own reads, so the window holds a poll as well as the button.
+    await page.waitForTimeout(4000);
+    const after = statSync(join(repo, '.git/index'));
+    assert.deepEqual([after.mtimeMs, after.ino, after.size], [index.mtimeMs, index.ino, index.size], 'reading the repository does not write the index');
     await page.getByRole('button', { name: '新建侧栏标签页' }).click();
     await page.locator('#view-menu').getByRole('button', { name: 'Git', exact: true }).click();
     assert.equal(await page.locator('.sidebar-tab:visible').count(), 1);
@@ -212,23 +222,17 @@ test('Git tab follows terminal cwd, opens working-tree files, and shows one read
     assert.deepEqual(errors, []);
   } finally {
     await desktop?.close();
-    stopServer(app.bundle, env);
+    stopServer(env);
     rmSync(home, { recursive: true, force: true });
   }
 });
-test('Git history loads the next page when the rail is scrolled to its end', { timeout: 180000 }, async (t) => {
-  const app = installedApp();
-  if (!app) { t.skip('the WangCai app is not installed'); return; }
+test('Git history loads the next page when the rail is scrolled to its end', { timeout: 180000 }, async () => {
   execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-page-')));
   const env = testEnv(home);
   let desktop;
   try {
-    const plugins = linkPlugins(home);
-    if (!plugins || !existsSync(join(plugins, 'terminal-agent/main.cjs'))) {
-      t.skip('the installed app has no workspace plugin'); return;
-    }
-    writeInit(home, { workspaces: [{ id: 'terminal-agent', directory: join(plugins, 'terminal-agent') }], tabs: [{ id: 'git', directory }] });
+    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }] });
     // More commits than the 50 the first page holds, so the rail has a second page to reach.
     const total = 55;
     const repo = join(home, 'paging');
@@ -239,18 +243,10 @@ test('Git history loads the next page when the rail is scrolled to its end', { t
       writeFileSync(join(repo, 'count.txt'), `${index}\n`);
       git('add', 'count.txt'); git('commit', '-qm', `commit ${index}`);
     }
-    desktop = await electron.launch({ executablePath: app.executable, args: [`--user-data-dir=${join(home, 'electron')}`], env });
+    desktop = await launchApp(home, env);
     const page = await desktop.firstWindow();
-    const errors = [];
-    page.on('pageerror', error => errors.push(error.message));
-    page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
-    await page.locator('.workspaces').waitFor();
-    await page.getByRole('button', { name: '切换右侧栏' }).click();
-    await page.getByRole('button', { name: '新建侧栏标签页' }).click();
-    await page.locator('#view-menu').getByRole('button', { name: 'Git', exact: true }).click();
-    await page.getByText('请选择一个已连接的终端', { exact: true }).waitFor();
-    await page.locator('.workspaces').click({ button: 'right' });
-    await page.locator('#workspace-row-menu').getByRole('menuitem', { name: '新建 本机', exact: true }).click();
+    const errors = trackErrors(page);
+    await openGitTab(page);
     await waitForTerminal(page);
     await run(page, `cd '${repo}'`);
     await page.locator('.xterm-screen').filter({ hasText: 'paging' }).waitFor();
@@ -267,7 +263,47 @@ test('Git history loads the next page when the rail is scrolled to its end', { t
     assert.deepEqual(errors, []);
   } finally {
     await desktop?.close();
-    stopServer(app.bundle, env);
+    stopServer(env);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+test('With auto refresh off, the Git page reads the repository only when asked', { timeout: 180000 }, async () => {
+  execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-off-')));
+  const env = testEnv(home);
+  let desktop;
+  try {
+    const repo = join(home, 'repo');
+    mkdirSync(repo);
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
+    git('init', '-q', '-b', 'main'); git('config', 'user.name', 'UI Test'); git('config', 'user.email', 'ui@test.local');
+    writeFileSync(join(repo, 'tracked.ts'), 'const tracked = true;\n');
+    git('add', 'tracked.ts'); git('commit', '-qm', 'initial commit');
+    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory, config: { autoRefresh: false } }] });
+    desktop = await launchApp(home, env);
+    const page = await desktop.firstWindow();
+    const errors = trackErrors(page);
+    await openGitTab(page);
+    await waitForTerminal(page);
+    await run(page, `cd '${repo}'`);
+    await page.locator('.xterm-screen').filter({ hasText: 'repo' }).waitFor();
+    // The workspace follows the shell's directory and tells the tab, which reads the repository again: waiting for the
+    // branch waits for that read to land, so the page is idle from here until a read is asked for.
+    await page.locator('.git-branch').filter({ hasText: 'main' }).waitFor();
+    writeFileSync(join(repo, 'asked.ts'), 'const asked = true;\n');
+    git('add', 'asked.ts');
+    await page.getByRole('button', { name: '刷新 Git' }).click();
+    await page.locator('.git-rail .git-file').filter({ hasText: 'asked.ts' }).waitFor();
+    writeFileSync(join(repo, 'fresh.ts'), 'const fresh = true;\n');
+    // A page that read on its own would poll within three seconds and bring the file to the rail; this window outlasts that.
+    await page.waitForTimeout(5000);
+    assert.equal(await page.locator('.git-rail .git-file').filter({ hasText: 'fresh.ts' }).count(), 0, 'the page reads the repository only when asked');
+    await page.getByRole('button', { name: '刷新 Git' }).click();
+    await page.locator('.git-rail .git-file').filter({ hasText: 'fresh.ts' }).waitFor();
+    assert.deepEqual(errors, []);
+  } finally {
+    await desktop?.close();
+    stopServer(env);
     rmSync(home, { recursive: true, force: true });
   }
 });
