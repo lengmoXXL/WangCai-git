@@ -37,13 +37,17 @@ export async function readGit(method: string, cwd: string, query: GitRequest, ru
         const [ahead, behind] = field.slice(12).split(' ');
         result.ahead = Number(ahead); result.behind = -Number(behind);
       } else if (field[0] === '?') result.changes.push({ path: field.slice(2), status: '?', stage: 'untracked' });
-      else if (field[0] === 'u') result.changes.push({ path: field.split(' ').slice(10).join(' '), status: 'U', stage: 'conflicted' });
-      else if (field[0] === '1' || field[0] === '2') {
+      else if (field[0] === 'u') {
+        const parts = field.split(' ');
+        // An unmerged file is read from its second stage, which git names as h2.
+        result.changes.push({ path: parts.slice(10).join(' '), status: 'U', stage: 'conflicted', indexBlob: parts[8] });
+      } else if (field[0] === '1' || field[0] === '2') {
         const parts = field.split(' ');
         const path = parts.slice(field[0] === '1' ? 8 : 9).join(' ');
         const oldPath = field[0] === '2' ? fields[++i] : undefined;
-        if (parts[1][0] !== '.') result.changes.push({ path, oldPath, status: parts[1][0], stage: 'staged' });
-        if (parts[1][1] !== '.') result.changes.push({ path, status: parts[1][1], stage: 'unstaged' });
+        // Each side is named by the blob a diff of it reads: hH for the committed side, hI for the index.
+        if (parts[1][0] !== '.') result.changes.push({ path, oldPath, status: parts[1][0], stage: 'staged', headBlob: parts[6], indexBlob: parts[7] });
+        if (parts[1][1] !== '.') result.changes.push({ path, status: parts[1][1], stage: 'unstaged', indexBlob: parts[7] });
       }
     }
     result.truncated = result.changes.length > 1000;

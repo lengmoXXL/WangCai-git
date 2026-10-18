@@ -6,7 +6,13 @@ export type Settings = Profile & { font: Font; autoRefresh: boolean };
 
 export interface GitFile { path: string; oldPath?: string; status: string }
 export type Stage = 'staged' | 'unstaged' | 'untracked' | 'conflicted';
-export interface Change extends GitFile { stage: Stage }
+export interface Change extends GitFile {
+  stage: Stage;
+  /** The blob each side of this change is read from, as `git status` names them: only the sides a diff of the change
+   *  reads, since its worktree side is the file the page watches. */
+  headBlob?: string;
+  indexBlob?: string;
+}
 export interface Commit { sha: string; author: string; time: number; subject: string; refs: string[] }
 export interface History { commits: Commit[]; hasMore: boolean }
 export interface Overview extends History {

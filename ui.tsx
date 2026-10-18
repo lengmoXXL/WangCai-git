@@ -105,12 +105,25 @@ const watch = (context: UiContext, terminal: WorkspaceActive, holder: string, pa
 // A repository root and a path inside it, as the machine's absolute path: '/' is the one root that adds nothing.
 const absolute = (root: string, path: string) => `${root === '/' ? '' : root}/${path}`;
 
-function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, revision }: {
-  context: UiContext; terminal: WorkspaceActive; holder: string; root: string; comparison: Comparison; reading: Reading; wrap: boolean; revision: number;
+// What a pane reads its diff from, as the repository names it: a change carries the blobs of the two sides its own
+// diff reads, and the worktree side is the file the pane watches. Two things it cannot name: a file the list does not
+// hold, and a file a truncated list cut off, for which the key is the number of reads the page has applied.
+const sides = (comparison: Comparison, overview: Overview, reads: number) => {
+  // A commit names its content by its id alone.
+  if (comparison.source === 'commit') return 'commit';
+  const change = overview.changes.find(file => file.stage === comparison.source && file.path === comparison.path);
+  if (change) return [change.status, change.oldPath, change.headBlob, change.indexBlob].join('\0');
+  return overview.truncated ? `cut\0${reads}` : 'gone';
+};
+
+function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, source }: {
+  context: UiContext; terminal: WorkspaceActive; holder: string; root: string; comparison: Comparison; reading: Reading; wrap: boolean; source: string;
 }) {
   const [diff, setDiff] = useState<Diff>();
   const [error, setError] = useState('');
-  // The pane reads what it shows when it opens, and again when the repository is read again.
+  // The pane reads what it shows when it opens, and again when the sides it compares are not the ones it holds, or
+  // where a truncated list cut its file off so that no read can name those sides, whenever the page applies a read.
+  // Otherwise a change elsewhere in the repository leaves the pane as it is.
   const read = () => {
     void context.ui.request<Diff>('diff', { terminal, root, comparison }).then(value => {
       setError('');
@@ -119,9 +132,10 @@ function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, 
         && previous.notice === value.notice ? previous : value);
     }).catch((problem: Error) => setError(problem.message));
   };
-  useEffect(read, [context, terminal, root, comparison, revision]);
+  useEffect(read, [context, terminal, root, comparison, source]);
   // Writing the file changes what the pane holds while the repository stays as it is, so that file is watched: what a
-  // commit or the index holds is not the machine's file, and a deleted file has nothing to watch.
+  // commit or the index holds is not the machine's file, and a deleted file has nothing to watch. A watch that cannot
+  // be registered leaves that side to the reads the whole page asks for.
   useEffect(() => {
     const inWorktree = ['unstaged', 'untracked', 'conflicted'].includes(comparison.source) && comparison.status !== 'D';
     return inWorktree ? watch(context, terminal, holder, [absolute(root, comparison.path)], read) : undefined;
@@ -197,6 +211,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   const [error, setError] = useState('');
   const [toolbarRead, setToolbarRead] = useState(0);
   const [revision, setRevision] = useState(0);
+  const [reads, setReads] = useState(0); // the reads this page has applied
   const [loading, setLoading] = useState(false);
   const [opened, setOpened] = useState<string | null>(null);
   const [comparison, setComparison] = useState<Comparison>();
@@ -232,7 +247,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         if (repositoryRoot.current !== value.root) { setComparison(undefined); setOpened(value.commits[0]?.sha ?? null); }
         repositoryRoot.current = value.root;
         setOverview(value);
-        setRevision(count => count + 1);
+        setReads(count => count + 1);
         setError('');
       }).catch((error: Error) => {
         if (current !== generation.current) return;
@@ -246,6 +261,8 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         });
     };
     read(true);
+    // A read of the whole page, the button's or the tab's, reads what the pane shows again as well.
+    setRevision(count => count + 1);
     const timer = autoRefresh ? setInterval(() => read(false), pollMilliseconds) : undefined;
     return () => { clearInterval(timer); generation.current++; };
   }, [context, terminal, toolbarRead, activation, autoRefresh]);
@@ -327,7 +344,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         <div className="git-board">
           {comparison ? <section className="git-pane" aria-label={`Diff ${comparison.path}`}
             onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY }); }}>
-            <DiffPane key={JSON.stringify(comparison)} context={context} terminal={terminal} holder={holder} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} revision={revision} />
+            <DiffPane key={JSON.stringify(comparison)} context={context} terminal={terminal} holder={holder} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} source={`${revision}:${sides(comparison, overview, reads)}`} />
           </section> : <div className="git-note">选择文件查看 diff</div>}
         </div>
       </div>}

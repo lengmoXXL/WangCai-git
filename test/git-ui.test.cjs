@@ -307,3 +307,89 @@ test('With auto refresh off, the Git page reads the repository only when asked',
     rmSync(home, { recursive: true, force: true });
   }
 });
+test('A staged diff pane follows the index of the file it shows', { timeout: 180000 }, async () => {
+  execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-index-')));
+  const env = testEnv(home);
+  let desktop;
+  try {
+    const repo = join(home, 'repo');
+    mkdirSync(repo);
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
+    git('init', '-q', '-b', 'main'); git('config', 'user.name', 'UI Test'); git('config', 'user.email', 'ui@test.local');
+    const file = join(repo, 'indexed.ts');
+    writeFileSync(file, "const value = 'ONE';\n");
+    git('add', 'indexed.ts'); git('commit', '-qm', 'initial commit');
+    writeFileSync(file, "const value = 'TWO';\n"); git('add', 'indexed.ts');
+    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }] });
+    desktop = await launchApp(home, env);
+    const page = await desktop.firstWindow();
+    const errors = trackErrors(page);
+    await openGitTab(page);
+    await waitForTerminal(page);
+    await run(page, `cd '${repo}'`);
+    await page.locator('.xterm-screen').filter({ hasText: 'repo' }).waitFor();
+    await page.getByRole('button', { name: '刷新 Git' }).click();
+    await page.locator('.git-branch').filter({ hasText: 'main' }).waitFor();
+    const staged = page.locator('.git-rail > details').filter({ has: page.locator('summary', { hasText: /^已暂存/ }) });
+    await staged.locator('.git-file').filter({ hasText: 'indexed.ts' }).click();
+    const modified = page.locator('.git-editor .editor.modified .view-lines');
+    await modified.filter({ hasText: 'TWO' }).waitFor();
+    // The worktree holds a third version the staged side knows nothing about: the read that brings the file to the
+    // unstaged group leaves the pane comparing HEAD with the index, which still holds the second version.
+    writeFileSync(file, "const value = 'THREE';\n");
+    const unstaged = page.locator('.git-rail > details').filter({ has: page.locator('summary', { hasText: /^未暂存/ }) });
+    await unstaged.locator('.git-file').filter({ hasText: 'indexed.ts' }).waitFor();
+    await modified.filter({ hasText: 'TWO' }).waitFor();
+    assert.equal(await page.locator('.git-editor .view-lines').filter({ hasText: 'THREE' }).count(), 0, 'the pane reads the index side, not the worktree');
+    // Staging that third version moves the index blob without changing how the file is listed, so the pane is read
+    // again by the poll that finds the blob other than the one it holds: neither the button nor any other step.
+    git('add', 'indexed.ts');
+    await modified.filter({ hasText: 'THREE' }).waitFor();
+    assert.deepEqual(errors, []);
+  } finally {
+    await desktop?.close();
+    stopServer(env);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+test('A staged diff pane follows HEAD as well as the index', { timeout: 180000 }, async () => {
+  execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-head-')));
+  const env = testEnv(home);
+  let desktop;
+  try {
+    const repo = join(home, 'repo');
+    mkdirSync(repo);
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
+    git('init', '-q', '-b', 'main'); git('config', 'user.name', 'UI Test'); git('config', 'user.email', 'ui@test.local');
+    const file = join(repo, 'head.ts');
+    writeFileSync(file, "const value = 'ONE';\n");
+    git('add', 'head.ts'); git('commit', '-qm', 'first');
+    writeFileSync(file, "const value = 'TWO';\n");
+    git('add', 'head.ts'); git('commit', '-qm', 'second');
+    writeFileSync(file, "const value = 'THREE';\n"); git('add', 'head.ts');
+    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }] });
+    desktop = await launchApp(home, env);
+    const page = await desktop.firstWindow();
+    const errors = trackErrors(page);
+    await openGitTab(page);
+    await waitForTerminal(page);
+    await run(page, `cd '${repo}'`);
+    await page.locator('.xterm-screen').filter({ hasText: 'repo' }).waitFor();
+    await page.getByRole('button', { name: '刷新 Git' }).click();
+    await page.locator('.git-branch').filter({ hasText: 'main' }).waitFor();
+    const staged = page.locator('.git-rail > details').filter({ has: page.locator('summary', { hasText: /^已暂存/ }) });
+    await staged.locator('.git-file').filter({ hasText: 'head.ts' }).click();
+    await page.locator('.git-editor .editor.original .view-lines').filter({ hasText: 'TWO' }).waitFor();
+    // A soft reset moves HEAD without touching the index or the way the file is listed, so the committed side the
+    // pane compares is named by the head blob alone: the poll that finds it other than the one it holds reads again.
+    git('reset', '--soft', 'HEAD~1');
+    await page.locator('.git-editor .editor.original .view-lines').filter({ hasText: 'ONE' }).waitFor();
+    assert.deepEqual(errors, []);
+  } finally {
+    await desktop?.close();
+    stopServer(env);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
