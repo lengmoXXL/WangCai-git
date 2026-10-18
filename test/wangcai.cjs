@@ -18,12 +18,13 @@ exports.testEnv = (home) => {
   return env;
 };
 
-/** Launches the checkout's Electron, which loads this repository's build of the plugin. */
+/** Launches the checkout's Electron, which loads this repository's build of the plugin. The window is unfocused, so
+ *  driving it never takes the focus of whoever works at the machine. */
 exports.launchApp = (home, env) => {
   const app = wangcaiApp();
   return electron.launch({
     executablePath: require(join(app, 'node_modules/electron')),
-    args: [join(app, 'desktop'), `--user-data-dir=${join(home, 'electron')}`],
+    args: [join(app, 'desktop'), '--unfocused', `--user-data-dir=${join(home, 'electron')}`],
     cwd: app,
     env,
   });
