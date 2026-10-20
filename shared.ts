@@ -25,16 +25,12 @@ export interface Overview extends History {
   changes: Change[];
   truncated: boolean;
 }
-export interface Comparison extends GitFile { source: Stage | 'commit'; rev?: string }
+export type Comparison = GitFile & ({ source: Stage } | { source: 'commit'; rev: string })
 export interface Diff { oldText: string; newText: string; notice?: string }
-export interface GitRequest {
-  terminal: WorkspaceActive;
-  root?: string;
-  head?: string;
-  skip?: number;
-  rev?: string;
-  comparison?: Comparison;
-}
+export interface OverviewRequest { terminal: WorkspaceActive }
+export interface HistoryRequest { terminal: WorkspaceActive; root: string; head: string; skip: number }
+export interface FilesRequest { terminal: WorkspaceActive; root: string; rev: string }
+export interface DiffRequest { terminal: WorkspaceActive; root: string; comparison: Comparison }
 /** An empty path list gives up what that tab watched before. */
 export interface WatchRequest {
   holder: string;

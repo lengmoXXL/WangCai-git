@@ -1,7 +1,7 @@
 import type { MachineConnection, WorkspaceActive } from '@lengmoxxl/sdk';
 import type { MainContext } from '@lengmoxxl/sdk/channel';
-import { readGit, type RunGit } from './git';
-import type { GitRequest, WatchRequest } from './shared';
+import { readDiff, readFiles, readHistory, readOverview, type RunGit } from './git';
+import type { DiffRequest, FilesRequest, HistoryRequest, OverviewRequest, WatchRequest } from './shared';
 
 // Which fields this plugin takes from init.ts, and the default each one falls back to.
 export const config = {
@@ -35,17 +35,22 @@ export function activate(context: MainContext) {
       pending.delete(controller);
     }
   };
-  const handlers = ['overview', 'history', 'files', 'diff'].map(method => context.ui.handle(method, (query: GitRequest) =>
-    withConnection(query.terminal.machine, async connection => {
-      const cwd = method === 'overview' ? await connection.pty.cwd(query.terminal.sessionId) : query.root!;
-      const run: RunGit = async (cwd, args) => {
-        const result = await connection.subprocess.exec('git', ['--literal-pathspecs', '-c', 'color.ui=false', '-c', 'core.fsmonitor=false', ...args], {
-          cwd, env: { GIT_OPTIONAL_LOCKS: '0' },
-        });
-        return { stdout: Buffer.from(result.stdout), stderr: Buffer.from(result.stderr).toString(), code: result.code };
-      };
-      return await readGit(method, cwd, query, run, path => connection.fs.readFile(path));
-    })));
+  const runGit = (connection: MachineConnection): RunGit => async (cwd, args) => {
+    const result = await connection.subprocess.exec('git', ['--literal-pathspecs', '-c', 'color.ui=false', '-c', 'core.fsmonitor=false', ...args], {
+      cwd, env: { GIT_OPTIONAL_LOCKS: '0' },
+    });
+    return { stdout: Buffer.from(result.stdout), stderr: Buffer.from(result.stderr).toString(), code: result.code };
+  };
+  const handlers = [
+    context.ui.handle('overview', (query: OverviewRequest) => withConnection(query.terminal.machine, async connection =>
+      readOverview(await connection.pty.cwd(query.terminal.sessionId), runGit(connection)))),
+    context.ui.handle('history', (query: HistoryRequest) => withConnection(query.terminal.machine, async connection =>
+      readHistory(query, runGit(connection)))),
+    context.ui.handle('files', (query: FilesRequest) => withConnection(query.terminal.machine, async connection =>
+      readFiles(query, runGit(connection)))),
+    context.ui.handle('diff', (query: DiffRequest) => withConnection(query.terminal.machine, async connection =>
+      readDiff(query, runGit(connection), path => connection.fs.readFile(path)))),
+  ];
   // One watch set per tab: the window keeps a tab per workspace, and a tab that stops showing something must not stop
   // another tab's watch.
   const watchers = new Map<string, { key: string; connection: MachineConnection; close: () => void }>();
