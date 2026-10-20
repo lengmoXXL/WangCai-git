@@ -1,5 +1,6 @@
 const { execFileSync } = require('node:child_process');
-const { existsSync, mkdirSync, writeFileSync } = require('node:fs');
+const { existsSync, mkdirSync, writeFileSync, mkdtempSync, realpathSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
 const { resolve, join } = require('node:path');
 const { _electron: electron } = require('playwright-core');
 
@@ -12,7 +13,7 @@ const wangcaiApp = () => {
 };
 
 /** The environment a test runs the app in: its own home, and none of the variables a dev run exports. */
-exports.testEnv = (home) => {
+const testEnv = (home) => {
   const env = { ...process.env, HOME: home, WANGCAI_HOME: '', SHELL: '/bin/bash', ELECTRON_RENDERER_URL: '' };
   delete env.ELECTRON_RUN_AS_NODE;
   return env;
@@ -20,7 +21,7 @@ exports.testEnv = (home) => {
 
 /** Launches the checkout's Electron, which loads this repository's build of the plugin. The window is unfocused, so
  *  driving it never takes the focus of whoever works at the machine. */
-exports.launchApp = (home, env) => {
+const launchApp = (home, env) => {
   const app = wangcaiApp();
   return electron.launch({
     executablePath: require(join(app, 'node_modules/electron')),
@@ -31,7 +32,7 @@ exports.launchApp = (home, env) => {
 };
 
 /** The app loads only what init.ts lists, so a test names the plugins and where to read them from. */
-exports.writeInit = (home, lists) => {
+const writeInit = (home, lists) => {
   const { workspaces = [], tabs = [] } = lists ?? {};
   const entryText = (item) => {
     const spec = typeof item === 'string' ? { id: item } : item;
@@ -48,12 +49,12 @@ exports.writeInit = (home, lists) => {
 };
 
 /** Stops the agent the app started for the local machine, which outlives the window that asked for it. */
-exports.stopServer = (env) => {
+const stopServer = (env) => {
   try { execFileSync(join(wangcaiApp(), 'wangcaicli/dist/debug/wangcai'), ['server', 'stop'], { env, stdio: 'ignore', timeout: 15000 }); } catch {}
 };
 
 /** Opens the sidebar's Git tab and a local workspace for it: the step every Git test starts with. */
-exports.openGitTab = async (page) => {
+const openGitTab = async (page) => {
   await page.locator('.workspaces').waitFor();
   // The window is drawn before its plugins are loaded, so the sidebar waits for one to list them.
   await page.locator('#view-menu button').first().waitFor({ state: 'attached' });
@@ -66,18 +67,39 @@ exports.openGitTab = async (page) => {
 };
 
 /** Waits until a workspace takes input; the terminal attaches a moment after its pane appears. */
-exports.waitForTerminal = (page) => page.waitForFunction(() => (document.querySelector('.terminal-pane.active .xterm-rows')?.textContent ?? '').trim().length > 0);
+const waitForTerminal = (page) => page.waitForFunction(() => (document.querySelector('.terminal-pane.active .xterm-rows')?.textContent ?? '').trim().length > 0);
 
 /** Collects what the page reports on its own, which a test asserts is nothing: a plugin that throws fails its test. */
-exports.trackErrors = (page) => {
+const trackErrors = (page) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   return errors;
 };
 
-exports.run = async (page, line) => {
+const run = async (page, line) => {
   await page.locator('.terminal-pane.active .xterm-helper-textarea').click();
   await page.keyboard.type(line);
   await page.keyboard.press('Enter');
 };
+
+/** Starts the app for one test, opens the Git tab, and tears down the window, the agent and the home afterwards. */
+const withGitApp = async (prefix, lists, body) => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), `${prefix}-`)));
+  const env = testEnv(home);
+  writeInit(home, lists);
+  let desktop;
+  try {
+    desktop = await launchApp(home, env);
+    const page = await desktop.firstWindow();
+    const errors = trackErrors(page);
+    await openGitTab(page);
+    return await body({ home, env, page, errors });
+  } finally {
+    await desktop?.close();
+    stopServer(env);
+    rmSync(home, { recursive: true, force: true });
+  }
+};
+
+Object.assign(exports, { run, waitForTerminal, withGitApp });

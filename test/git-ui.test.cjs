@@ -1,22 +1,19 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, statSync, copyFileSync, utimesSync, renameSync } = require('node:fs');
-const { tmpdir } = require('node:os');
+const { mkdirSync, writeFileSync, statSync, copyFileSync, utimesSync, renameSync } = require('node:fs');
 const { join, resolve } = require('node:path');
-const { launchApp, openGitTab, run, stopServer, testEnv, trackErrors, waitForTerminal, writeInit } = require('./wangcai.cjs');
+const { run, waitForTerminal, withGitApp } = require('./wangcai.cjs');
 
 const directory = resolve(__dirname, '..');
 
-test('Git tab follows terminal cwd, opens working-tree files, and shows one read-only diff at a time', { timeout: 180000 }, async () => {
-  // The app loads this directory's build, so the test starts from what the source says now.
-  execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-ui-')));
-  const env = testEnv(home);
-  let desktop;
-  try {
-    // The tab follows a workspace, and the plugins beside this repository are what opens a file it shows.
-    writeInit(home, { workspaces: ['terminal-agent'], tabs: ['files', { id: 'git', directory }] });
+// The app loads this directory's build, so the tests start from what the source says now.
+execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
+
+test('Git tab follows terminal cwd, opens working-tree files, and shows one read-only diff at a time', { timeout: 180000 }, () => withGitApp('wangcai-git-ui',
+  // The tab follows a workspace, and the plugins beside this repository are what opens a file it shows.
+  { workspaces: ['terminal-agent'], tabs: ['files', { id: 'git', directory }] },
+  async ({ home, env, page, errors }) => {
     const repo = join(home, "repo with 'quote");
     mkdirSync(repo);
     const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
@@ -26,10 +23,6 @@ test('Git tab follows terminal cwd, opens working-tree files, and shows one read
     git('add', '.'); git('commit', '-qm', 'initial UI commit');
     writeFileSync(join(repo, 'sample.ts'), unchanged + 'const value = "STAGED_VALUE";\n'); git('add', '.');
     writeFileSync(join(repo, 'sample.ts'), unchanged + 'const value = "WORKTREE_VALUE";\n');
-    desktop = await launchApp(home, env);
-    const page = await desktop.firstWindow();
-    const errors = trackErrors(page);
-    await openGitTab(page);
     await page.locator('.git-note[role=alert]').filter({ hasText: 'not a git repository' }).waitFor();
     await waitForTerminal(page);
     await run(page, `cd '${repo.replaceAll("'", "'\\''")}'`);
@@ -220,19 +213,10 @@ test('Git tab follows terminal cwd, opens working-tree files, and shows one read
     await run(page, 'exit');
     await page.getByText('请选择一个已连接的终端', { exact: true }).waitFor();
     assert.deepEqual(errors, []);
-  } finally {
-    await desktop?.close();
-    stopServer(env);
-    rmSync(home, { recursive: true, force: true });
-  }
-});
-test('Git history loads the next page when the rail is scrolled to its end', { timeout: 180000 }, async () => {
-  execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-page-')));
-  const env = testEnv(home);
-  let desktop;
-  try {
-    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }] });
+}));
+test('Git history loads the next page when the rail is scrolled to its end', { timeout: 180000 }, () => withGitApp('wangcai-git-page',
+  { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }] },
+  async ({ home, env, page, errors }) => {
     // More commits than the 50 the first page holds, so the rail has a second page to reach.
     const total = 55;
     const repo = join(home, 'paging');
@@ -243,10 +227,6 @@ test('Git history loads the next page when the rail is scrolled to its end', { t
       writeFileSync(join(repo, 'count.txt'), `${index}\n`);
       git('add', 'count.txt'); git('commit', '-qm', `commit ${index}`);
     }
-    desktop = await launchApp(home, env);
-    const page = await desktop.firstWindow();
-    const errors = trackErrors(page);
-    await openGitTab(page);
     await waitForTerminal(page);
     await run(page, `cd '${repo}'`);
     await page.locator('.xterm-screen').filter({ hasText: 'paging' }).waitFor();
@@ -261,29 +241,16 @@ test('Git history loads the next page when the rail is scrolled to its end', { t
     assert.equal(await rows.count(), total, 'scrolling to the end appends the older commits');
     assert.match(await rows.last().textContent(), /commit 0/, 'the appended page keeps the history order');
     assert.deepEqual(errors, []);
-  } finally {
-    await desktop?.close();
-    stopServer(env);
-    rmSync(home, { recursive: true, force: true });
-  }
-});
-test('With auto refresh off, the Git page reads the repository only when asked', { timeout: 180000 }, async () => {
-  execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-off-')));
-  const env = testEnv(home);
-  let desktop;
-  try {
+}));
+test('With auto refresh off, the Git page reads the repository only when asked', { timeout: 180000 }, () => withGitApp('wangcai-git-off',
+  { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory, config: { autoRefresh: false } }] },
+  async ({ home, env, page, errors }) => {
     const repo = join(home, 'repo');
     mkdirSync(repo);
     const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
     git('init', '-q', '-b', 'main'); git('config', 'user.name', 'UI Test'); git('config', 'user.email', 'ui@test.local');
     writeFileSync(join(repo, 'tracked.ts'), 'const tracked = true;\n');
     git('add', 'tracked.ts'); git('commit', '-qm', 'initial commit');
-    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory, config: { autoRefresh: false } }] });
-    desktop = await launchApp(home, env);
-    const page = await desktop.firstWindow();
-    const errors = trackErrors(page);
-    await openGitTab(page);
     await waitForTerminal(page);
     await run(page, `cd '${repo}'`);
     await page.locator('.xterm-screen').filter({ hasText: 'repo' }).waitFor();
@@ -301,18 +268,10 @@ test('With auto refresh off, the Git page reads the repository only when asked',
     await page.getByRole('button', { name: '刷新 Git' }).click();
     await page.locator('.git-rail .git-file').filter({ hasText: 'fresh.ts' }).waitFor();
     assert.deepEqual(errors, []);
-  } finally {
-    await desktop?.close();
-    stopServer(env);
-    rmSync(home, { recursive: true, force: true });
-  }
-});
-test('A staged diff pane follows the index of the file it shows', { timeout: 180000 }, async () => {
-  execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-index-')));
-  const env = testEnv(home);
-  let desktop;
-  try {
+}));
+test('A staged diff pane follows the index of the file it shows', { timeout: 180000 }, () => withGitApp('wangcai-git-index',
+  { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }] },
+  async ({ home, env, page, errors }) => {
     const repo = join(home, 'repo');
     mkdirSync(repo);
     const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
@@ -321,11 +280,6 @@ test('A staged diff pane follows the index of the file it shows', { timeout: 180
     writeFileSync(file, "const value = 'ONE';\n");
     git('add', 'indexed.ts'); git('commit', '-qm', 'initial commit');
     writeFileSync(file, "const value = 'TWO';\n"); git('add', 'indexed.ts');
-    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }] });
-    desktop = await launchApp(home, env);
-    const page = await desktop.firstWindow();
-    const errors = trackErrors(page);
-    await openGitTab(page);
     await waitForTerminal(page);
     await run(page, `cd '${repo}'`);
     await page.locator('.xterm-screen').filter({ hasText: 'repo' }).waitFor();
@@ -347,18 +301,10 @@ test('A staged diff pane follows the index of the file it shows', { timeout: 180
     git('add', 'indexed.ts');
     await modified.filter({ hasText: 'THREE' }).waitFor();
     assert.deepEqual(errors, []);
-  } finally {
-    await desktop?.close();
-    stopServer(env);
-    rmSync(home, { recursive: true, force: true });
-  }
-});
-test('A staged diff pane follows HEAD as well as the index', { timeout: 180000 }, async () => {
-  execFileSync(process.execPath, ['build.mjs'], { cwd: directory });
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'wangcai-git-head-')));
-  const env = testEnv(home);
-  let desktop;
-  try {
+}));
+test('A staged diff pane follows HEAD as well as the index', { timeout: 180000 }, () => withGitApp('wangcai-git-head',
+  { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }] },
+  async ({ home, env, page, errors }) => {
     const repo = join(home, 'repo');
     mkdirSync(repo);
     const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
@@ -369,11 +315,6 @@ test('A staged diff pane follows HEAD as well as the index', { timeout: 180000 }
     writeFileSync(file, "const value = 'TWO';\n");
     git('add', 'head.ts'); git('commit', '-qm', 'second');
     writeFileSync(file, "const value = 'THREE';\n"); git('add', 'head.ts');
-    writeInit(home, { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }] });
-    desktop = await launchApp(home, env);
-    const page = await desktop.firstWindow();
-    const errors = trackErrors(page);
-    await openGitTab(page);
     await waitForTerminal(page);
     await run(page, `cd '${repo}'`);
     await page.locator('.xterm-screen').filter({ hasText: 'repo' }).waitFor();
@@ -387,9 +328,4 @@ test('A staged diff pane follows HEAD as well as the index', { timeout: 180000 }
     git('reset', '--soft', 'HEAD~1');
     await page.locator('.git-editor .editor.original .view-lines').filter({ hasText: 'ONE' }).waitFor();
     assert.deepEqual(errors, []);
-  } finally {
-    await desktop?.close();
-    stopServer(env);
-    rmSync(home, { recursive: true, force: true });
-  }
-});
+}));
