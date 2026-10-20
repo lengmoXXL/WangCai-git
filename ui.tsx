@@ -108,12 +108,12 @@ const absolute = (root: string, path: string) => `${root === '/' ? '' : root}/${
 // What a pane reads its diff from, as the repository names it: a change carries the blobs of the two sides its own
 // diff reads, and the worktree side is the file the pane watches. Two things it cannot name: a file the list does not
 // hold, and a file a truncated list cut off, for which the key is the number of reads the page has applied.
-const sides = (comparison: Comparison, overview: Overview, reads: number) => {
+const sides = (comparison: Comparison, overview: Overview, appliedReads: number) => {
   // A commit names its content by its id alone.
   if (comparison.source === 'commit') return 'commit';
   const change = overview.changes.find(file => file.stage === comparison.source && file.path === comparison.path);
   if (change) return [change.status, change.oldPath, change.headBlob, change.indexBlob].join('\0');
-  return overview.truncated ? `cut\0${reads}` : 'gone';
+  return overview.truncated ? `cut\0${appliedReads}` : 'gone';
 };
 
 function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, source }: {
@@ -210,8 +210,8 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   const [overview, setOverview] = useState<Overview>();
   const [error, setError] = useState('');
   const [toolbarRead, setToolbarRead] = useState(0);
-  const [revision, setRevision] = useState(0);
-  const [reads, setReads] = useState(0); // the reads this page has applied
+  const [pageReads, setPageReads] = useState(0);
+  const [appliedReads, setAppliedReads] = useState(0);
   const [loading, setLoading] = useState(false);
   const [opened, setOpened] = useState<string | null>(null);
   const [comparison, setComparison] = useState<Comparison>();
@@ -247,7 +247,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         if (repositoryRoot.current !== value.root) { setComparison(undefined); setOpened(value.commits[0]?.sha ?? null); }
         repositoryRoot.current = value.root;
         setOverview(value);
-        setReads(count => count + 1);
+        setAppliedReads(count => count + 1);
         setError('');
       }).catch((error: Error) => {
         if (current !== generation.current) return;
@@ -262,7 +262,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     };
     read(true);
     // A read of the whole page, the button's or the tab's, reads what the pane shows again as well.
-    setRevision(count => count + 1);
+    setPageReads(count => count + 1);
     const timer = autoRefresh ? setInterval(() => read(false), pollMilliseconds) : undefined;
     return () => { clearInterval(timer); generation.current++; };
   }, [context, terminal, toolbarRead, activation, autoRefresh]);
@@ -344,7 +344,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         <div className="git-board">
           {comparison ? <section className="git-pane" aria-label={`Diff ${comparison.path}`}
             onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY }); }}>
-            <DiffPane key={JSON.stringify(comparison)} context={context} terminal={terminal} holder={holder} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} source={`${revision}:${sides(comparison, overview, reads)}`} />
+            <DiffPane key={JSON.stringify(comparison)} context={context} terminal={terminal} holder={holder} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} source={`${pageReads}:${sides(comparison, overview, appliedReads)}`} />
           </section> : <div className="git-note">选择文件查看 diff</div>}
         </div>
       </div>}
