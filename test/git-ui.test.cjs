@@ -349,10 +349,67 @@ test('A diff pane closes when the change it shows leaves the list', { timeout: 1
     await unstaged.locator('.git-file').filter({ hasText: 'committed.ts' }).click();
     await page.locator('.git-editor .view-lines').filter({ hasText: 'TWO' }).waitFor();
     // Committing the change takes it out of the list the pane was picked from, so the poll that finds the list
-    // without it closes the pane: what is left is no diff at all, not a comparison of two sides that never met.
-    git('add', 'committed.ts'); git('commit', '-qm', 'commit the change');
+    // without it closes the pane: what is left is no diff at all, not a comparison of two sides that never met. The
+    // commit stages the file as it commits it, so no read catches it staged in the list it is about to leave.
+    git('commit', '-qam', 'commit the change');
     await page.getByText('选择文件查看 diff', { exact: true }).waitFor();
     assert.equal(await page.locator('.git-rail > details .git-file').filter({ hasText: 'committed.ts' }).count(), 0, 'the file leaves the list it was picked from');
     assert.equal(await page.getByRole('button', { name: '打开文件', exact: true }).isDisabled(), true, 'closing the pane clears the selection');
+    assert.deepEqual(errors, []);
+  }));
+test('The diff hands its caret to the opened file and keeps it across reads', { timeout: 180000 }, () => withGitApp('wangcai-git-caret',
+  { workspaces: ['terminal-agent'], tabs: ['files', { id: 'git', directory }] },
+  async ({ home, env, page, errors }) => {
+    const repo = join(home, 'repo');
+    mkdirSync(repo);
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
+    git('init', '-q', '-b', 'main'); git('config', 'user.name', 'UI Test'); git('config', 'user.email', 'ui@test.local');
+    // Long enough that a line deep in it is only drawn once a pane is scrolled to it, and every line differs, so the
+    // page hides no region of the file.
+    const lines = (suffix) => Array.from({ length: 200 }, (_, index) => `const line${index + 1} = ${index + 1}${suffix};\n`).join('');
+    writeFileSync(join(repo, 'long.ts'), lines(''));
+    git('add', '.'); git('commit', '-qm', 'initial commit');
+    writeFileSync(join(repo, 'long.ts'), lines(' + 1'));
+    await waitForTerminal(page);
+    await run(page, `cd '${repo}'`);
+    await page.locator('.xterm-screen').filter({ hasText: 'repo' }).waitFor();
+    await page.getByRole('button', { name: '刷新 Git' }).click();
+    await page.locator('.git-branch').filter({ hasText: 'main' }).waitFor();
+    const unstaged = page.locator('.git-rail > details').filter({ has: page.locator('summary', { hasText: /^未暂存/ }) });
+    await unstaged.locator('.git-file').filter({ hasText: 'long.ts' }).click();
+    await page.locator('.git-editor .editor.modified .view-lines').filter({ hasText: 'const line1 = 1 + 1;' }).waitFor();
+    // Whether an editor draws a line inside its own pane, compared by the plain spaces the file holds rather than the
+    // non-breaking ones the preview draws them as.
+    const draws = (selector, editor, text) => page.evaluate(([selector, editor, text]) => {
+      const host = document.querySelector(selector);
+      const root = (host.shadowRoot ?? host).querySelector(editor);
+      const line = [...root.querySelectorAll('.view-line')].find((node) => node.textContent.replace(/\u00a0/g, ' ') === text);
+      if (!line) return false;
+      const box = line.getBoundingClientRect();
+      const pane = root.getBoundingClientRect();
+      return box.top >= pane.top && box.bottom <= pane.bottom;
+    }, [selector, editor, text]);
+    // The caret goes deep into the file the way a reader moves it, with the keyboard: a click lands on a line the page
+    // redraws under it, and a pane opens with the caret on its first line.
+    await page.evaluate(() => document.querySelector('.git-editor').shadowRoot.querySelector('.editor.modified [tabindex="0"]').focus());
+    for (let step = 0; step < 149; step++) await page.keyboard.press('ArrowDown');
+    await page.getByRole('button', { name: '打开文件', exact: true }).click();
+    const preview = '.sidebar-panel[data-plugin=files] .code-preview';
+    // The line is read off the page, so the preview has to have drawn it before it can be found.
+    await page.locator(`${preview} .view-line`).first().waitFor();
+    // The toolbar carries the caret to the file it opens, and the preview lands on that same line and column.
+    const opened = await page.evaluate(async () => Object.values(await window.wangcai.call('request', 'files', 'history'))[0].entries[0]);
+    assert.ok(opened.line > 100, `the caret was deep in the file, not near its top: line ${opened.line}`);
+    assert.equal(opened.column, 1);
+    assert.equal(await draws(preview, '.monaco-editor', `const line${opened.line} = ${opened.line} + 1;`), true, 'the preview jumps to the line the diff shows');
+    // The preview took the sidebar, and a page that is off show draws no line of its file, so the Git tab comes back.
+    await page.locator('.sidebar-tab:has([aria-selected=true]) .close-tab').click();
+    // A read that brings new text builds the diff's editor again, and the caret the page remembers goes back with it:
+    // the pane shows the line again instead of starting over at the top of the file.
+    writeFileSync(join(repo, 'long.ts'), lines(' + 2'));
+    // The write reaches the pane through the watch on the file, and this window is longer than the three seconds the
+    // page waits between its own reads, which cover a watch that did not.
+    await page.waitForTimeout(4000);
+    assert.equal(await draws('.git-editor', '.editor.modified', `const line${opened.line} = ${opened.line} + 2;`), true, 'the rebuilt diff is back at the caret');
     assert.deepEqual(errors, []);
   }));

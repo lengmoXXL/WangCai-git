@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CSSProperties, UIEvent } from 'react';
+import type { CSSProperties, RefObject, UIEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as monaco from 'monaco-editor/editor/editor.api.js';
 import 'monaco-editor/features/codicon/register.js';
@@ -58,7 +58,11 @@ function editorTheme(theme: Theme): monaco.editor.IStandaloneThemeData {
   };
 }
 
-function DiffEditor({ diff, path, reading, wrap }: { diff: Diff; path: string; reading: Reading; wrap: boolean }) {
+// Where the caret sits in the diff on show: the line and column the toolbar hands the file it opens, and where the
+// editor a read rebuilds puts the caret back.
+type Caret = { line: number; column: number };
+
+function DiffEditor({ diff, path, reading, wrap, caret }: { diff: Diff; path: string; reading: Reading; wrap: boolean; caret: RefObject<Caret | undefined> }) {
   const element = useRef<HTMLDivElement>(null);
   const editor = useRef<monaco.editor.IStandaloneDiffEditor>(undefined);
   const options = {
@@ -88,8 +92,13 @@ function DiffEditor({ diff, path, reading, wrap }: { diff: Diff; path: string; r
     const modified = monaco.editor.createModel(diff.newText, language);
     view.setModel({ original, modified });
     view.getOriginalEditor().updateOptions({ glyphMargin: false });
+    // The caret is taken from the side the diff draws as modified, the side a change leads to.
+    const side = view.getModifiedEditor();
+    const at = caret.current && { lineNumber: caret.current.line, column: caret.current.column };
+    if (at) { side.setPosition(at); side.revealPositionInCenter(at); }
+    const moved = side.onDidChangeCursorPosition(({ position }) => { caret.current = { line: position.lineNumber, column: position.column }; });
     editor.current = view;
-    return () => { editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
+    return () => { moved.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
   }, [diff, path]);
   useEffect(() => { editor.current?.updateOptions(options); }, [reading, wrap]);
   return <div className="git-editor" ref={element} />;
@@ -116,8 +125,8 @@ const sides = (comparison: Comparison, overview: Overview, appliedReads: number)
   return overview.truncated ? `cut\0${appliedReads}` : 'gone';
 };
 
-function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, source }: {
-  context: UiContext; terminal: WorkspaceActive; holder: string; root: string; comparison: Comparison; reading: Reading; wrap: boolean; source: string;
+function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, source, caret }: {
+  context: UiContext; terminal: WorkspaceActive; holder: string; root: string; comparison: Comparison; reading: Reading; wrap: boolean; source: string; caret: RefObject<Caret | undefined>;
 }) {
   const [diff, setDiff] = useState<Diff>();
   const [error, setError] = useState('');
@@ -143,7 +152,7 @@ function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, 
   if (error) return <div className="git-note" role="alert">{error}</div>;
   if (!diff) return <div className="git-note">正在读取 diff…</div>;
   if (diff.notice) return <div className="git-note">{diff.notice}</div>;
-  return <DiffEditor diff={diff} path={comparison.path} reading={reading} wrap={wrap} />;
+  return <DiffEditor diff={diff} path={comparison.path} reading={reading} wrap={wrap} caret={caret} />;
 }
 
 function FileRow({ file, select }: { file: GitFile; select: () => void }) {
@@ -222,9 +231,12 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   const [menu, setMenu] = useState<{ x: number; y: number }>();
   const body = useRef<HTMLDivElement>(null);
   const drag = useRef<{ origin: number; width: number }>(undefined);
+  const caret = useRef<Caret>(undefined);
   const railMinimum = 180;
   const railMaximum = Math.round((body.current?.clientWidth ?? 0) * 0.7);
   const clampWidth = (requested: number) => Math.round(Math.max(railMinimum, Math.min(railMaximum, requested)));
+  // A caret belongs to the diff that holds it, so choosing another file forgets the one the last file was left at.
+  const show = (next: Comparison) => { caret.current = undefined; setComparison(next); };
   const generation = useRef(0);
   const repositoryRoot = useRef('');
   const busy = useRef(false); // a poll skips the read in flight instead of piling up
@@ -311,6 +323,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         disabled={!overview || !comparison || comparison.status === 'D'} onClick={() => void context.global.publish('onclick', {
           type: 'file', machine: terminal.machine,
           path: absolute(overview!.root, comparison!.path),
+          line: caret.current?.line, column: caret.current?.column,
         } satisfies FileClick).catch((error: Error) => setError(error.message))}>
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M9 13.5H2.5v-11h5l3 3V7M7.5 2.5v3h3M7 10h7m-3-3 3 3-3 3"/></svg>
       </button>
@@ -326,14 +339,14 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
             {(Object.entries(stages) as [Stage, string][]).map(([stage, title]) => {
               const files = overview.changes.filter(file => file.stage === stage);
               return files.length > 0 && <details key={stage} open><summary>{title} <small>{files.length}</small></summary>
-                {files.map(file => <FileRow key={file.path} file={file} select={() => setComparison({ ...file, source: stage })} />)}
+                {files.map(file => <FileRow key={file.path} file={file} select={() => show({ ...file, source: stage })} />)}
               </details>;
             })}
             {overview.truncated && <div className="git-note">仅显示前 1000 项改动</div>}
             <div className="git-gap" />
             <div className="git-history">
               {overview.commits.map(commit => <CommitRow key={`${overview.root}:${commit.sha}`} commit={commit} context={context} terminal={terminal} root={overview.root}
-                selected={opened === commit.sha} toggle={() => setOpened(opened === commit.sha ? null : commit.sha)} select={setComparison} />)}
+                selected={opened === commit.sha} toggle={() => setOpened(opened === commit.sha ? null : commit.sha)} select={show} />)}
               {!overview.commits.length && <div className="git-note">暂无提交</div>}
             </div>
           </nav>
@@ -347,7 +360,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         <div className="git-board">
           {comparison ? <section className="git-pane" aria-label={`Diff ${comparison.path}`}
             onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY }); }}>
-            <DiffPane key={JSON.stringify(comparison)} context={context} terminal={terminal} holder={holder} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} source={`${pageReads}:${sides(comparison, overview, appliedReads)}`} />
+            <DiffPane key={JSON.stringify(comparison)} context={context} terminal={terminal} holder={holder} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} caret={caret} source={`${pageReads}:${sides(comparison, overview, appliedReads)}`} />
           </section> : <div className="git-note">选择文件查看 diff</div>}
         </div>
       </div>}
@@ -368,7 +381,10 @@ function GitView({ context, activation, workspaceId, autoRefresh }: { context: U
     return off;
   }, [context, activation, workspaceId]);
   if (!terminal) return <div className="git-note">请选择一个已连接的终端</div>;
-  return <Repository key={JSON.stringify(terminal)} context={context} terminal={terminal} activation={activation} holder={workspaceId ?? ''} autoRefresh={autoRefresh} />;
+  // The page follows a session, not everything the workspace reports about it: a shell that retitles its workspace
+  // does not move the page to another one, and rebuilding it would take the diff and its caret off the screen.
+  const session = `${terminal.machine.id}|${terminal.machine.host ?? ''}|${terminal.sessionId}`;
+  return <Repository key={session} context={context} terminal={terminal} activation={activation} holder={workspaceId ?? ''} autoRefresh={autoRefresh} />;
 }
 
 export function open(context: UiContext, record?: TabRecord) {
