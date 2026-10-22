@@ -1,6 +1,6 @@
 const { execFileSync } = require('node:child_process');
-const { existsSync, mkdirSync, writeFileSync, mkdtempSync, realpathSync, rmSync } = require('node:fs');
-const { tmpdir } = require('node:os');
+const { cpSync, existsSync, mkdirSync, writeFileSync, mkdtempSync, realpathSync, rmSync } = require('node:fs');
+const { homedir, tmpdir } = require('node:os');
 const { resolve, join } = require('node:path');
 const { _electron: electron } = require('playwright-core');
 
@@ -12,10 +12,26 @@ const wangcaiApp = () => {
   return root;
 };
 
+// Core is what the app installs and builds into a home, so a case that started from an empty one would clone and
+// build it on every run. The developer's prepared build is copied in instead; WANGCAI_CORE_SOURCE names another.
+const coreSource = process.env.WANGCAI_CORE_SOURCE ?? join(homedir(), '.wangcai-dev/.local/share/wangcai/core-src');
+
+const installCore = (home) => {
+  const build = join(coreSource, 'dist');
+  if (!existsSync(join(build, 'main.cjs'))) throw new Error(`no Core build at ${build}: build the checkout at ${coreSource}, or set WANGCAI_CORE_SOURCE to one that is built`);
+  const storage = join(home, '.local/share/wangcai');
+  mkdirSync(storage, { recursive: true });
+  cpSync(build, join(storage, 'core'), { recursive: true });
+  // The snapshot an agent reads is taken from these sources, so a case gets them as the app's own install would.
+  for (const entry of ['main', 'ui']) cpSync(join(coreSource, entry), join(storage, 'core-src', entry), { recursive: true });
+};
+
 /** The environment a test runs the app in: its own home, and none of the variables a dev run exports. */
 const testEnv = (home) => {
   const env = { ...process.env, HOME: home, WANGCAI_HOME: '', SHELL: '/bin/bash', ELECTRON_RENDERER_URL: '' };
   delete env.ELECTRON_RUN_AS_NODE;
+  // The agent Core would install from a release is taken from this checkout instead, so a case needs no network.
+  env.WANGCAI_AGENT_SOURCE = join(wangcaiApp(), 'wangcaicli/dist/debug/wangcai');
   return env;
 };
 
@@ -23,6 +39,7 @@ const testEnv = (home) => {
  *  driving it never takes the focus of whoever works at the machine. */
 const launchApp = (home, env) => {
   const app = wangcaiApp();
+  installCore(home);
   return electron.launch({
     executablePath: require(join(app, 'node_modules/electron')),
     args: [join(app, 'desktop'), '--unfocused', `--user-data-dir=${join(home, 'electron')}`],

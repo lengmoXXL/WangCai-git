@@ -247,6 +247,9 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         if (repositoryRoot.current !== value.root) { setComparison(undefined); setOpened(value.commits[0]?.sha ?? null); }
         repositoryRoot.current = value.root;
         setOverview(value);
+        // A change the list no longer holds has nothing left to compare, so the pane that showed it closes instead of
+        // reading a diff of a change the repository no longer has; a truncated list cannot say whether its file left.
+        setComparison(previous => previous && sides(previous, value, appliedReads) === 'gone' ? undefined : previous);
         setAppliedReads(count => count + 1);
         setError('');
       }).catch((error: Error) => {

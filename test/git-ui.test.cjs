@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { mkdirSync, writeFileSync, statSync, copyFileSync, utimesSync, renameSync } = require('node:fs');
+const { mkdirSync, writeFileSync, statSync, copyFileSync, utimesSync, renameSync, rmSync } = require('node:fs');
 const { join, resolve } = require('node:path');
 const { run, waitForTerminal, withGitApp } = require('./wangcai.cjs');
 
@@ -329,3 +329,30 @@ test('A staged diff pane follows HEAD as well as the index', { timeout: 180000 }
     await page.locator('.git-editor .editor.original .view-lines').filter({ hasText: 'ONE' }).waitFor();
     assert.deepEqual(errors, []);
 }));
+test('A diff pane closes when the change it shows leaves the list', { timeout: 180000 }, () => withGitApp('wangcai-git-close',
+  { workspaces: ['terminal-agent'], tabs: [{ id: 'git', directory }] },
+  async ({ home, env, page, errors }) => {
+    const repo = join(home, 'repo');
+    mkdirSync(repo);
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' });
+    git('init', '-q', '-b', 'main'); git('config', 'user.name', 'UI Test'); git('config', 'user.email', 'ui@test.local');
+    const file = join(repo, 'committed.ts');
+    writeFileSync(file, "const value = 'ONE';\n");
+    git('add', 'committed.ts'); git('commit', '-qm', 'initial commit');
+    writeFileSync(file, "const value = 'TWO';\n");
+    await waitForTerminal(page);
+    await run(page, `cd '${repo}'`);
+    await page.locator('.xterm-screen').filter({ hasText: 'repo' }).waitFor();
+    await page.getByRole('button', { name: '刷新 Git' }).click();
+    await page.locator('.git-branch').filter({ hasText: 'main' }).waitFor();
+    const unstaged = page.locator('.git-rail > details').filter({ has: page.locator('summary', { hasText: /^未暂存/ }) });
+    await unstaged.locator('.git-file').filter({ hasText: 'committed.ts' }).click();
+    await page.locator('.git-editor .view-lines').filter({ hasText: 'TWO' }).waitFor();
+    // Committing the change takes it out of the list the pane was picked from, so the poll that finds the list
+    // without it closes the pane: what is left is no diff at all, not a comparison of two sides that never met.
+    git('add', 'committed.ts'); git('commit', '-qm', 'commit the change');
+    await page.getByText('选择文件查看 diff', { exact: true }).waitFor();
+    assert.equal(await page.locator('.git-rail > details .git-file').filter({ hasText: 'committed.ts' }).count(), 0, 'the file leaves the list it was picked from');
+    assert.equal(await page.getByRole('button', { name: '打开文件', exact: true }).isDisabled(), true, 'closing the pane clears the selection');
+    assert.deepEqual(errors, []);
+  }));
