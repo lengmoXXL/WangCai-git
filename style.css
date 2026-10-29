@@ -35,13 +35,13 @@
 .git-page summary::before { content: '▾'; color: var(--wc-muted); font-size: 9px; }
 .git-page details:not([open]) summary::before { content: '▸'; }
 .git-page summary small { color: var(--wc-muted); font-variant-numeric: tabular-nums; }
-.git-file { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 22px; padding: 0 10px 0 24px; text-align: left; }
+.git-file { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 22px; padding: 0 4px 0 24px; text-align: left; }
 .git-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-dir { color: var(--wc-muted); }
 .git-status { flex-shrink: 0; width: 11px; color: var(--wc-yellow); font-family: monospace; text-align: center; }
 .git-status-A, .git-status-\? { color: var(--wc-green); }
 .git-status-D, .git-status-U { color: var(--wc-red); }
-.git-commit-row { display: flex; align-items: center; gap: 6px; width: 100%; height: 26px; padding: 0 10px; text-align: left; }
+.git-commit-row { display: flex; align-items: center; gap: 6px; width: 100%; height: 26px; padding: 0 4px 0 10px; text-align: left; }
 .git-commit-row[aria-expanded=true] { background: var(--wc-overlay); }
 .git-commit-row > span:first-child { color: var(--wc-muted); font-size: 9px; }
 .git-subject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
