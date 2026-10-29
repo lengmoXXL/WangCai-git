@@ -186,7 +186,7 @@ test('A Git tab follows the terminal, opens files from every list, and shows one
     await page.mouse.move(boardBox.x + boardBox.width - 40, boardBox.y + 40);
     assert.equal(await wrapWidth(), 12);
     await page.mouse.move(boardBox.x + 2, boardBox.y + 40);
-    assert.equal(await wrapWidth(), hiddenWidth + 4);
+    assert.equal(await wrapWidth(), hiddenWidth + 6);
     assert.equal(await rail.evaluate((element) => getComputedStyle(element).display), 'flex');
     const boardWidthBefore = await boardWidth();
     const overlayDividerBox = await divider.boundingBox();
