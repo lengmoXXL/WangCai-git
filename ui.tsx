@@ -58,8 +58,8 @@ function editorTheme(theme: Theme): monaco.editor.IStandaloneThemeData {
   };
 }
 
-// Where the caret sits in the diff on show: the line and column the toolbar hands the file it opens, and where the
-// editor a read rebuilds puts the caret back.
+// Where the caret sits in the diff: the line and column the toolbar hands the file it opens, and the point the editor
+// puts it back at when a note gives way to the diff again.
 type Caret = { line: number; column: number };
 
 function DiffEditor({ diff, path, reading, wrap, caret }: { diff: Diff; path: string; reading: Reading; wrap: boolean; caret: RefObject<Caret | undefined> }) {
@@ -99,7 +99,21 @@ function DiffEditor({ diff, path, reading, wrap, caret }: { diff: Diff; path: st
     const moved = side.onDidChangeCursorPosition(({ position }) => { caret.current = { line: position.lineNumber, column: position.column }; });
     editor.current = view;
     return () => { moved.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
-  }, [diff, path]);
+  }, [path]);
+  // A read of the file the pane already shows rewrites the two sides where they stand: only the lines that changed
+  // redraw, and the caret and the scroll it was left at survive unless that scroll no longer shows the caret.
+  useEffect(() => {
+    const view = editor.current!;
+    const held = view.getModel()!;
+    if (held.original.getValue() === diff.oldText && held.modified.getValue() === diff.newText) return;
+    const kept = view.saveViewState();
+    held.original.setValue(diff.oldText);
+    held.modified.setValue(diff.newText);
+    view.restoreViewState(kept);
+    const side = view.getModifiedEditor();
+    const at = side.getPosition();
+    if (at && !side.getVisibleRanges().some((range) => range.containsPosition(at))) side.revealPositionInCenter(at);
+  }, [diff]);
   useEffect(() => { editor.current?.updateOptions(options); }, [reading, wrap]);
   return <div className="git-editor" ref={element} />;
 }
@@ -136,7 +150,7 @@ function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, 
   const read = () => {
     void context.ui.request<Diff>('diff', { terminal, root, comparison }).then(value => {
       setError('');
-      // A read that finds what the pane already holds leaves it as it is, so the editor on screen is not built again.
+      // A read that finds what the pane already holds leaves it as it is, so a poll of an unchanged file draws nothing.
       setDiff(previous => previous && previous.oldText === value.oldText && previous.newText === value.newText
         && previous.notice === value.notice ? previous : value);
     }).catch((problem: Error) => setError(problem.message));

@@ -418,10 +418,12 @@ test('The diff hands its caret to the opened file and keeps it across reads', { 
     assert.ok(await draws(previewSelector, '.monaco-editor', `const line${opened.line} = ${opened.line} + 1;`), 'the preview jumps to the line the diff shows');
     // The preview took the sidebar, and a page that is off show draws no line of its file, so the Git tab comes back.
     await closeView(page);
-    // A read that brings new text builds the diff's editor again, and the caret the page remembers goes back with it:
-    // the pane shows the line again instead of starting over at the top of the file.
+    // A read that brings new text rewrites the sides the pane holds, so the editor that draws again is the one already
+    // on screen: a marker set on it now is still there after the read.
+    await diffEditor(page).first().evaluate((element) => { element.dataset.kept = 'changed'; });
     writeFileSync(long, sourceOf(' + 2'));
     // The write reaches the pane through the watch on the file, and a poll inside this window covers a watch that did not.
     await page.waitForTimeout(poll + 1000);
-    assert.ok(await draws(diffSelector, '.editor.modified', `const line${opened.line} = ${opened.line} + 2;`), 'the rebuilt diff is back at the caret');
+    assert.equal(await diffEditor(page, '[data-kept=changed]').count(), 1, 'the read redraws the diff instead of building another editor');
+    assert.ok(await draws(diffSelector, '.editor.modified', `const line${opened.line} = ${opened.line} + 2;`), 'the redrawn diff is still at the caret');
   }));
