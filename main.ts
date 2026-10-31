@@ -3,6 +3,8 @@ import type { MainContext } from '@lengmoxxl/sdk/channel';
 import { readDiff, readFiles, readHistory, readOverview, type RunGit } from './git';
 import type { DiffRequest, FilesRequest, HistoryRequest, OverviewRequest, WatchRequest } from './shared';
 
+export const keys = { '<leader>gg': { global: true, desc: '打开 Git 视图', event: 'core:show-view', data: { plugin: 'git' } } };
+
 // Which fields this plugin takes from init.ts, and the default each one falls back to.
 export const config = {
   font: {
