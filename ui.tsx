@@ -209,7 +209,6 @@ function CommitRow({ commit, context, terminal, root, selected, toggle, select }
       }}>
         <span>{selected ? '▾' : '▸'}</span>
         <span className="git-subject">{commit.subject}</span>
-        <span className="git-who">{commit.author}</span>
       </button>
       {tip && <div className="git-tip" ref={tipElement}>
         <div><b>{commit.subject}</b></div>

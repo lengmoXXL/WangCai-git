@@ -46,7 +46,6 @@
 .git-commit-row[aria-expanded=true] { background: var(--wc-overlay); }
 .git-commit-row > span:first-child { color: var(--wc-muted); font-size: 9px; }
 .git-subject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.git-who { flex-shrink: 0; color: var(--wc-muted); }
 .git-tip { position: fixed; z-index: 6; padding: 6px 9px; border: 1px solid var(--wc-border); border-radius: 6px; background: var(--wc-overlay); box-shadow: 0 10px 26px #0007; color: var(--wc-muted); font-size: 11px; line-height: 1.65; }
 /* Cover the 8px gap plus the border so the hover region stays connected. */
 .git-tip::before { content: ''; position: absolute; top: -1px; bottom: -1px; right: 100%; width: 9px; }
