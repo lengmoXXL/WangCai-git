@@ -102,13 +102,27 @@ function DiffEditor({ diff, path, reading, wrap, caret }: { diff: Diff; path: st
   }, [path]);
   // A read of the file the pane already shows rewrites the two sides where they stand: only the lines that changed
   // redraw, and the caret and the scroll it was left at survive unless that scroll no longer shows the caret.
+  // The sides are edited apart rather than set whole: a model set to a new value drops every decoration, and those
+  // decorations are where the diff keeps the state of its unchanged regions.
   useEffect(() => {
     const view = editor.current!;
     const held = view.getModel()!;
     if (held.original.getValue() === diff.oldText && held.modified.getValue() === diff.newText) return;
+    const write = (model: monaco.editor.ITextModel, text: string) => {
+      const before = model.getValue();
+      if (before === text) return;
+      const shortest = Math.min(before.length, text.length);
+      let head = 0;
+      while (head < shortest && before[head] === text[head]) head++;
+      let tail = 0;
+      while (tail < shortest - head && before[before.length - 1 - tail] === text[text.length - 1 - tail]) tail++;
+      const from = model.getPositionAt(head);
+      const to = model.getPositionAt(before.length - tail);
+      model.applyEdits([{ range: monaco.Range.fromPositions(from, to), text: text.slice(head, text.length - tail) }]);
+    };
     const kept = view.saveViewState();
-    held.original.setValue(diff.oldText);
-    held.modified.setValue(diff.newText);
+    write(held.original, diff.oldText);
+    write(held.modified, diff.newText);
     view.restoreViewState(kept);
     const side = view.getModifiedEditor();
     const at = side.getPosition();

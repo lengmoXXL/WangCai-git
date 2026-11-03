@@ -427,3 +427,26 @@ test('The diff hands its caret to the opened file and keeps it across reads', { 
     assert.equal(await diffEditor(page, '[data-kept=changed]').count(), 1, 'the read redraws the diff instead of building another editor');
     assert.ok(await draws(diffSelector, '.editor.modified', `const line${opened.line} = ${opened.line} + 2;`), 'the redrawn diff is still at the caret');
   }));
+test('A read of a changed file leaves its folded regions folded', { timeout: caseTimeout }, () => withGitApp('wangcai-git-fold',
+  gitLists,
+  async ({ home, env, page }) => {
+    const { repo, git } = repoIn(home, env, 'repo');
+    const file = join(repo, 'folded.ts');
+    // The change takes the first line and the tail is long enough to be folded away, so the changed line stays in view.
+    const tail = Array.from({ length: 40 }, (_, index) => `const line${index} = ${index};\n`).join('');
+    writeFileSync(file, `const value = 'ONE';\n${tail}`);
+    git('add', 'folded.ts'); git('commit', '-qm', 'initial commit');
+    writeFileSync(file, `const value = 'TWO';\n${tail}`);
+    await readRepo(page, repo, 'repo');
+    await sectionFiles(page, '未暂存').filter({ hasText: 'folded.ts' }).click();
+    await modifiedLines(page).filter({ hasText: 'TWO' }).waitFor();
+    // A fold arrives once the pane has computed the diff of the sides it set, so the baseline is where it lands.
+    await page.locator('.git-editor .diff-hidden-lines-widget').first().waitFor();
+    assert.equal(await diffLines(page).filter({ hasText: 'const line20 = 20;' }).count(), 0, 'the unchanged tail is folded away');
+    // The file the pane shows is watched, so writing it reads the diff again.
+    writeFileSync(file, `const value = 'THREE';\n${tail}`);
+    await modifiedLines(page).filter({ hasText: 'THREE' }).waitFor();
+    // The diff is recomputed once the pane has the new text, a debounced step the window below covers.
+    await page.waitForTimeout(1000);
+    assert.equal(await diffLines(page).filter({ hasText: 'const line20 = 20;' }).count(), 0, 'the read leaves the tail folded');
+  }));
