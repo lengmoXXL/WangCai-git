@@ -3,7 +3,51 @@ const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const { mkdirSync, writeFileSync, statSync, copyFileSync, utimesSync, renameSync, rmSync } = require('node:fs');
 const { join, resolve } = require('node:path');
-const { closeView, createWorkspace, openView, run, terminalShows, until, viewTabs, withWindow } = require('@lengmoxxl/wangcai-testkit');
+const { until, withWindow } = require('@lengmoxxl/wangcai-testkit');
+
+// What a case does to the window's own chrome.
+//
+// The menu that makes a workspace is the space under the rows: the rows have to end above the list's bottom edge, so the
+// click lands on the list rather than on a row.
+const openWorkspaceMenu = async (page) => {
+  const list = page.locator('.workspaces');
+  const box = await list.boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height - 4, { button: 'right' });
+};
+
+/** The terminal of the workspace in front: the app's own pane, not a plugin's panel. */
+const activeTerminal = (page) => page.locator('.terminal-pane.active');
+
+/** Types a line into the pane in front and runs it, the way a person does. */
+const run = async (page, line) => {
+  await activeTerminal(page).locator('.xterm-helper-textarea').click();
+  await page.keyboard.type(line);
+  await page.keyboard.press('Enter');
+};
+
+/** Waits until the terminal in front draws that text, which it does once the shell has written it. */
+const terminalShows = (page, text) => activeTerminal(page).locator('.xterm-screen').filter({ hasText: text }).waitFor();
+
+/** Opens a local workspace, and waits for the shell its pane draws a moment after the workspace appears. */
+const createWorkspace = async (page) => {
+  await openWorkspaceMenu(page);
+  await page.locator('#workspace-row-menu').getByRole('menuitem', { name: '新建 本机', exact: true }).click();
+  await terminalShows(page, /\S/);
+};
+
+/** Opens a view in the sidebar, showing the sidebar first when it is off screen. */
+const openView = async (page, name) => {
+  const newTab = page.getByRole('button', { name: '新建侧栏标签页' });
+  if (!(await newTab.isVisible())) await page.getByRole('button', { name: '切换右侧栏' }).click();
+  await newTab.click();
+  await page.locator('#view-menu').getByRole('button', { name, exact: true }).click();
+};
+
+/** The sidebar's tabs as the window draws them. */
+const viewTabs = (page) => page.locator('.sidebar-tab:visible');
+
+/** Closes the sidebar tab that is selected. */
+const closeView = (page) => page.locator('.sidebar-tab:has([aria-selected=true]) .close-tab').click();
 
 const directory = resolve(__dirname, '..');
 const caseTimeout = 180000;
