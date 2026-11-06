@@ -18,6 +18,27 @@ const readingOrder = ['auto', 'split', 'inline'] as const;
 type Reading = typeof readingOrder[number];
 const readings: Record<Reading, string> = { auto: '自动', split: '双栏', inline: '单栏' };
 
+// A rail row is named by the key the cursor holds: the kind of row, then whatever names it.
+const rowKey = {
+  stage: (stage: Stage) => `stage:${stage}`,
+  change: (stage: Stage, path: string) => `change:${stage}:${path}`,
+  commit: (sha: string) => `commit:${sha}`,
+  commitFile: (sha: string, path: string) => `commitfile:${sha}:${path}`,
+};
+
+// The mark a row draws while the keys hold it: an empty value the walk reads back off the page.
+const mark = (cursor: string, row: string) => cursor === row ? '' : undefined;
+
+// `gg` is the one press that waits for a second: the next key either completes it or drops it.
+const doubleG = () => {
+  let waiting = false;
+  return (key: string, jump: () => void) => {
+    if (key === 'g' && waiting) { waiting = false; jump(); return true; }
+    waiting = key === 'g';
+    return waiting;
+  };
+};
+
 function editorTheme(theme: Theme): monaco.editor.IStandaloneThemeData {
   const hex = (color: string) => color.slice(1);
   const alpha = (color: string, value: number) => `${color}${Math.round(value * 255).toString(16).padStart(2, '0')}`;
@@ -62,7 +83,15 @@ function editorTheme(theme: Theme): monaco.editor.IStandaloneThemeData {
 // puts it back at when a note gives way to the diff again.
 type Caret = { line: number; column: number };
 
-function DiffEditor({ diff, path, reading, wrap, caret }: { diff: Diff; path: string; reading: Reading; wrap: boolean; caret: RefObject<Caret | undefined> }) {
+// How a press reaches the diff: a comparison the pane already shows hands the keys to the editor it holds, and any other
+// arrives as `take`, which the pane mounting for it spends. Both end in `enter`, which is what Ctrl+l calls. The way back
+// is the `leave` the pane is handed with its comparison.
+type Keys = { take?: Comparison; enter?: () => void };
+
+function DiffEditor({ diff, path, reading, wrap, caret, keys, leave }: {
+  diff: Diff; path: string; reading: Reading; wrap: boolean; caret: RefObject<Caret | undefined>;
+  keys: RefObject<Keys>; leave: () => void;
+}) {
   const element = useRef<HTMLDivElement>(null);
   const editor = useRef<monaco.editor.IStandaloneDiffEditor>(undefined);
   const options = {
@@ -84,7 +113,7 @@ function DiffEditor({ diff, path, reading, wrap, caret }: { diff: Diff; path: st
       theme: 'wangcai', readOnly: true, domReadOnly: true,
       automaticLayout: true, scrollBeyondLastLine: false,
       renderOverviewRuler: false, hideUnchangedRegions: { enabled: true },
-      ...options, fontSize: size, lineHeight: font.lineHeight ? Math.round(size * font.lineHeight) : 0, fontFamily: font.family, lineNumbersMinChars: 3, contextmenu: false,
+      ...options, fontSize: size, lineHeight: font.lineHeight ? Math.round(size * font.lineHeight) : 0, fontFamily: font.family, lineNumbersMinChars: 3, contextmenu: false, cursorStyle: 'block',
     });
     const name = path.split('/').pop()!;
     const language = monaco.languages.getLanguages().find(item => item.filenames?.includes(name) || item.extensions?.some(extension => name.endsWith(extension)))?.id ?? 'plaintext';
@@ -97,8 +126,53 @@ function DiffEditor({ diff, path, reading, wrap, caret }: { diff: Diff; path: st
     const at = caret.current && { lineNumber: caret.current.line, column: caret.current.column };
     if (at) { side.setPosition(at); side.revealPositionInCenter(at); }
     const moved = side.onDidChangeCursorPosition(({ position }) => { caret.current = { line: position.lineNumber, column: position.column }; });
+    const gg = doubleG();
+    // The keys a vim reader reaches for in a read-only diff: j and k walk the lines, h and l the columns, a page takes
+    // the caret and the view together, 0 and $ walk to the ends of a line, and G and `gg` to the ends of the file, with
+    // each arrow key standing beside its letter. Monaco keeps every binding this does not read.
+    const vim = (event: KeyboardEvent) => {
+      if (event.metaKey || event.altKey) return;
+      // A box the editor opens over the diff keeps its own letters, so the find field can be typed in.
+      if (event.target instanceof HTMLElement && event.target.closest('.find-widget')) return;
+      const model = side.getModel()!;
+      const now = side.getPosition() ?? { lineNumber: 1, column: 1 };
+      const last = model.getLineCount();
+      const lineHeight = side.getOption(monaco.editor.EditorOption.lineHeight) || 1;
+      const screenful = Math.max(1, Math.floor(side.getLayoutInfo().height / lineHeight) - 1);
+      const go = (line: number) => {
+        const seat = { lineNumber: Math.min(last, Math.max(1, line)), column: 1 };
+        side.setPosition(seat);
+        side.revealPositionInCenterIfOutsideViewport(seat);
+      };
+      const scroll = (lines: number) => { side.setScrollTop(side.getScrollTop() + lines * lineHeight); go(now.lineNumber + lines); };
+      const column = (value: number) => side.setPosition({ lineNumber: now.lineNumber, column: Math.min(model.getLineMaxColumn(now.lineNumber), Math.max(1, value)) });
+      const key = event.key;
+      let motion: (() => void) | undefined;
+      if (event.ctrlKey) {
+        if (key === 'd') motion = () => scroll(Math.round(screenful / 2));
+        else if (key === 'u') motion = () => scroll(-Math.round(screenful / 2));
+        else if (key === 'f') motion = () => scroll(screenful);
+        else if (key === 'b') motion = () => scroll(-screenful);
+        // The rail is the pane to the left, which is where Ctrl+h takes the keys.
+        else if (key === 'h' || key === 'ArrowLeft') motion = leave;
+      } else if (key === 'j' || key === 'ArrowDown') motion = () => go(now.lineNumber + 1);
+      else if (key === 'k' || key === 'ArrowUp') motion = () => go(now.lineNumber - 1);
+      else if (key === 'h' || key === 'ArrowLeft') motion = () => column(now.column - 1);
+      else if (key === 'l' || key === 'ArrowRight') motion = () => column(now.column + 1);
+      else if (key === '0' || key === 'Home') motion = () => column(1);
+      else if (key === '$' || key === 'End') motion = () => column(model.getLineMaxColumn(now.lineNumber));
+      else if (key === 'G') motion = () => go(last);
+      // `gg` spans two presses, so it reports for itself whether the press was its own; one key is claimed here, once.
+      const claimed = gg(key, () => go(1));
+      if (!motion && !claimed) return;
+      motion?.();
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    container.addEventListener('keydown', vim, true);
+    keys.current.enter = () => side.focus();
     editor.current = view;
-    return () => { moved.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
+    return () => { keys.current.enter = undefined; container.removeEventListener('keydown', vim, true); moved.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
   }, [path]);
   // A read of the file the pane already shows rewrites the two sides where they stand: only the lines that changed
   // redraw, and the caret and the scroll it was left at survive unless that scroll no longer shows the caret.
@@ -106,8 +180,8 @@ function DiffEditor({ diff, path, reading, wrap, caret }: { diff: Diff; path: st
   // decorations are where the diff keeps the state of its unchanged regions.
   useEffect(() => {
     const view = editor.current!;
-    const held = view.getModel()!;
-    if (held.original.getValue() === diff.oldText && held.modified.getValue() === diff.newText) return;
+    const models = view.getModel()!;
+    if (models.original.getValue() === diff.oldText && models.modified.getValue() === diff.newText) return;
     const write = (model: monaco.editor.ITextModel, text: string) => {
       const before = model.getValue();
       if (before === text) return;
@@ -121,8 +195,8 @@ function DiffEditor({ diff, path, reading, wrap, caret }: { diff: Diff; path: st
       model.applyEdits([{ range: monaco.Range.fromPositions(from, to), text: text.slice(head, text.length - tail) }]);
     };
     const kept = view.saveViewState();
-    write(held.original, diff.oldText);
-    write(held.modified, diff.newText);
+    write(models.original, diff.oldText);
+    write(models.modified, diff.newText);
     view.restoreViewState(kept);
     const side = view.getModifiedEditor();
     const at = side.getPosition();
@@ -142,6 +216,9 @@ const watch = (context: UiContext, terminal: WorkspaceActive, holder: string, pa
 // A repository root and a path inside it, as the machine's absolute path: '/' is the one root that adds nothing.
 const absolute = (root: string, path: string) => `${root === '/' ? '' : root}/${path}`;
 
+// What tells one diff pane from another: a comparison drawn again is the same pane, so it keeps its editor.
+const paneKey = (comparison: Comparison) => JSON.stringify(comparison);
+
 // What a pane reads its diff from, as the repository names it: a change carries the blobs of the two sides its own
 // diff reads, and the worktree side is the file the pane watches. Two things it cannot name: a file the list does not
 // hold, and a file a truncated list cut off, for which the key is the number of reads the page has applied.
@@ -153,8 +230,8 @@ const sides = (comparison: Comparison, overview: Overview, appliedReads: number)
   return overview.truncated ? `cut\0${appliedReads}` : 'gone';
 };
 
-function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, source, caret }: {
-  context: UiContext; terminal: WorkspaceActive; holder: string; root: string; comparison: Comparison; reading: Reading; wrap: boolean; source: string; caret: RefObject<Caret | undefined>;
+function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, source, caret, keys, leave }: {
+  context: UiContext; terminal: WorkspaceActive; holder: string; root: string; comparison: Comparison; reading: Reading; wrap: boolean; source: string; caret: RefObject<Caret | undefined>; keys: RefObject<Keys>; leave: () => void;
 }) {
   const [diff, setDiff] = useState<Diff>();
   const [error, setError] = useState('');
@@ -177,15 +254,22 @@ function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, 
     const inWorktree = ['unstaged', 'untracked', 'conflicted'].includes(comparison.source) && comparison.status !== 'D';
     return inWorktree ? watch(context, terminal, holder, [absolute(root, comparison.path)], read) : undefined;
   }, [context, terminal, holder, root, comparison]);
+  // The keys a press leaves name the comparison this pane mounts for, and the pane spends them once it settles: the
+  // editor that mounted takes them, and a file with only a note or a failed read has none to take.
+  useEffect(() => {
+    if (keys.current.take !== comparison || (!error && !diff)) return;
+    keys.current.take = undefined;
+    keys.current.enter?.();
+  }, [keys, comparison, error, diff]);
   if (error) return <div className="git-note" role="alert">{error}</div>;
   if (!diff) return <div className="git-note">正在读取 diff…</div>;
   if (diff.notice) return <div className="git-note">{diff.notice}</div>;
-  return <DiffEditor diff={diff} path={comparison.path} reading={reading} wrap={wrap} caret={caret} />;
+  return <DiffEditor diff={diff} path={comparison.path} reading={reading} wrap={wrap} caret={caret} keys={keys} leave={leave} />;
 }
 
-function FileRow({ file, select }: { file: GitFile; select: () => void }) {
+function FileRow({ file, row, cursor, select }: { file: GitFile; row: string; cursor: string; select: () => void }) {
   const cut = file.path.lastIndexOf('/');
-  return <button className="git-file" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={select}>
+  return <button className="git-file" data-row={row} data-cursor={mark(cursor, row)} title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={select}>
     <span className={`git-status git-status-${file.status}`}>{file.status}</span>
     <span className="git-path">{cut < 0 ? file.path : <>
       <span className="git-dir">{file.path.slice(0, cut + 1)}</span><span>{file.path.slice(cut + 1)}</span>
@@ -193,10 +277,11 @@ function FileRow({ file, select }: { file: GitFile; select: () => void }) {
   </button>;
 }
 
-function CommitRow({ commit, context, terminal, root, selected, toggle, select }: {
-  commit: Commit; context: UiContext; terminal: WorkspaceActive; root: string; selected: boolean;
+function CommitRow({ commit, context, terminal, root, selected, cursor, toggle, select }: {
+  commit: Commit; context: UiContext; terminal: WorkspaceActive; root: string; selected: boolean; cursor: string;
   toggle: () => void; select: (comparison: Comparison) => void;
 }) {
+  const row = rowKey.commit(commit.sha);
   const [files, setFiles] = useState<GitFile[]>();
   const [error, setError] = useState('');
   useEffect(() => {
@@ -217,7 +302,7 @@ function CommitRow({ commit, context, terminal, root, selected, toggle, select }
   }, [tip]);
   return <>
     <div onMouseLeave={() => setTip(undefined)}>
-      <button className="git-commit-row" aria-expanded={selected} onClick={toggle} onMouseEnter={(event) => {
+      <button className="git-commit-row" data-row={row} data-cursor={mark(cursor, row)} aria-expanded={selected} onClick={toggle} onMouseEnter={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
         setTip({ top: rect.top, left: rect.right + 8 });
       }}>
@@ -231,9 +316,9 @@ function CommitRow({ commit, context, terminal, root, selected, toggle, select }
         <div>{commit.refs.map(ref => ref.replace(/refs\/(heads|remotes|tags)\//g, '')).join(' · ') || '没有引用'}</div>
       </div>}
     </div>
-    {selected && <div className="git-commit-files">
+    {selected && <div className="git-commit-files" data-commit={row}>
       {error ? <div className="git-note" role="alert">{error}</div> : !files ? <div className="git-note">正在读取…</div>
-        : files.length ? files.map(file => <FileRow key={file.path} file={file} select={() => select({ ...file, source: 'commit', rev: commit.sha })} />)
+        : files.length ? files.map(file => <FileRow key={file.path} file={file} row={rowKey.commitFile(commit.sha, file.path)} cursor={cursor} select={() => select({ ...file, source: 'commit', rev: commit.sha })} />)
         : <div className="git-note">没有文件改动</div>}
     </div>}
   </>;
@@ -253,17 +338,25 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   const [comparison, setComparison] = useState<Comparison>();
   const [reading, setReading] = useState<Reading>('auto');
   const [wrap, setWrap] = useState(true);
-  const [rail, setRail] = useState(true);
+  const [railShown, setRailShown] = useState(true);
   const [railWidth, setRailWidth] = useState(260);
   const [menu, setMenu] = useState<{ x: number; y: number }>();
+  // The row the rail's keys hold, named by the row's own key, so a read that redraws the list leaves it on that row.
+  const [cursor, setCursor] = useState('');
+  // The sections a reader folded, by key or by click; a commit keeps its own fold in `opened`.
+  const [folded, setFolded] = useState<Stage[]>([]);
   const body = useRef<HTMLDivElement>(null);
   const drag = useRef<{ origin: number; width: number }>(undefined);
   const caret = useRef<Caret>(undefined);
+  const keys = useRef<Keys>({});
+  // Set while a press opens a file: it makes that choice the one the keys wait for, and it is what tells a press on the
+  // diff the pane already shows apart from a click on the same row.
+  const pressing = useRef(false);
+  // The rail's `gg` outlives the renders its listener is rebuilt on, so two presses count as one.
+  const gg = useRef(doubleG()).current;
   const railMinimum = 180;
   const railMaximum = Math.round((body.current?.clientWidth ?? 0) * 0.7);
   const clampWidth = (requested: number) => Math.round(Math.max(railMinimum, Math.min(railMaximum, requested)));
-  // A caret belongs to the diff that holds it, so choosing another file forgets the one the last file was left at.
-  const show = (next: Comparison) => { caret.current = undefined; setComparison(next); };
   const generation = useRef(0);
   const repositoryRoot = useRef('');
   const busy = useRef(false); // a poll skips the read in flight instead of piling up
@@ -329,12 +422,113 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     const rail = event.currentTarget;
     if (rail.scrollHeight - rail.scrollTop - rail.clientHeight <= 80) loadOlder();
   };
+  const summaryOf = (details: Element) => details.querySelector<HTMLElement>('summary');
+  // The rail's rows as the page draws them: a folded section keeps the summary that reopens it and loses the rows
+  // under it, so one walk covers every row the keys can reach.
+  const rows = () => [...(body.current?.querySelectorAll<HTMLElement>('.git-rail [data-row]') ?? [])]
+    .filter((row) => {
+      const closed = row.closest('details:not([open])');
+      return !closed || row === summaryOf(closed);
+    });
+  // The row the keys hold takes the focus with the cursor, so a press that folds a section or leaves the diff lands on
+  // something the keys read.
+  const occupy = (row: HTMLElement) => { setCursor(row.dataset.row!); row.focus({ preventScroll: true }); row.scrollIntoView({ block: 'nearest' }); };
+  const isHeld = (row: HTMLElement) => row.hasAttribute('data-cursor');
+  const heldRow = () => rows().find(isHeld);
+  const step = (delta: number) => {
+    const list = rows();
+    if (!list.length) return;
+    const at = list.findIndex(isHeld);
+    // A list the cursor is not in yet is entered at its top, whichever way the key walks.
+    occupy(list[at < 0 ? 0 : Math.min(list.length - 1, Math.max(0, at + delta))]);
+  };
+  const jump = (to: 'first' | 'last') => {
+    const list = rows();
+    if (list.length) occupy(list[to === 'first' ? 0 : list.length - 1]);
+  };
+  const foldTo = (details: HTMLDetailsElement, closed: boolean) => {
+    const stage = details.dataset.stage as Stage;
+    setFolded((current) => closed ? (current.includes(stage) ? current : [...current, stage]) : current.filter((one) => one !== stage));
+  };
+  // Choosing a file from the rail: the pane it opens, and the keys the choice hands over.
+  const show = (next: Comparison) => {
+    const fromPress = pressing.current;
+    pressing.current = false;
+    // The pane mounts per comparison, so a file it already shows settles nowhere and no render would spend the keys: a
+    // press hands them to the editor it holds. That press still seats the row it was made on, so the hand-off waits for
+    // it to finish, or the row would take the focus back; a click on the row hands nothing over.
+    if (comparison && paneKey(comparison) === paneKey(next)) {
+      if (fromPress) queueMicrotask(() => keys.current.enter?.());
+      return;
+    }
+    // A caret belongs to the diff that holds it, so another file forgets the one the last file was left at.
+    caret.current = undefined;
+    if (fromPress) keys.current.take = next;
+    setComparison(next);
+  };
+  const into = () => {
+    const row = heldRow();
+    if (!row) return;
+    // The press is the row's own: it toggles a section or a commit's files, and a file's diff opens with the keys, which
+    // `pressing` marks as this press's own.
+    if (row.classList.contains('git-file')) pressing.current = true;
+    row.click();
+  };
+  const out = () => {
+    const row = heldRow();
+    if (!row) return;
+    // Closing fires on what is open: a row inside a section closes it through its summary, a commit's file closes the
+    // commit row its list names, and a commit row itself says it is open through aria-expanded.
+    const details = row.closest('details');
+    if (details) {
+      if (details.open) summaryOf(details)!.click();
+      return;
+    }
+    const list = row.closest<HTMLElement>('.git-commit-files');
+    const commit = list && rows().find((one) => one.dataset.row === list.dataset.commit);
+    if (commit) commit.click();
+    else if (row.getAttribute('aria-expanded') === 'true') row.click();
+  };
+  // The diff hands the keys back to the row they were on, or to the top of the list when they were on none.
+  const leaveDiff = () => {
+    const row = heldRow() ?? rows()[0];
+    if (row) occupy(row);
+  };
+  // The rail answers the keys the way a vim list does: j and k walk the rows on screen, h closes what is open around
+  // the cursor, l and Enter are the press the row itself would get, and `gg` and `G` are the two ends, with each arrow
+  // key standing beside its letter.
+  useEffect(() => {
+    const panel = body.current?.closest<HTMLElement>('.sidebar-panel');
+    if (!panel) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.target instanceof Node) || !panel.contains(event.target) || event.metaKey || event.altKey) return;
+      // The diff and the width handle read their own keys: a press made in either is not a press for the rail.
+      if (event.composedPath().some((node) => node instanceof HTMLElement && (node.classList.contains('git-editor') || node.classList.contains('git-divider')))) return;
+      const key = event.key;
+      let action: (() => void) | undefined;
+      // The diff is the pane to the right, so Ctrl+l hands the keys to it.
+      if (event.ctrlKey) {
+        if (key === 'l' || key === 'ArrowRight') action = () => keys.current.enter?.();
+      } else if (key === 'j' || key === 'ArrowDown') action = () => step(1);
+      else if (key === 'k' || key === 'ArrowUp') action = () => step(-1);
+      else if (key === 'G') action = () => jump('last');
+      else if (key === 'l' || key === 'ArrowRight' || key === 'Enter') action = into;
+      else if (key === 'h' || key === 'ArrowLeft') action = out;
+      // `gg` spans two presses, so it reports for itself whether the press was its own; one key is claimed here, once.
+      const claimed = gg(key, () => jump('first'));
+      if (!action && !claimed) return;
+      event.preventDefault();
+      action?.();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
   return <section className="git-page" aria-label="Git history" data-reading={reading}>
     <header className="git-toolbar">
       <span className="git-branch" title={overview?.upstream}>{overview?.branch}
         {overview?.ahead ? <b> ↑{overview.ahead}</b> : null}{overview?.behind ? <i> ↓{overview.behind}</i> : null}</span>
       <span className="git-spacer" />
-      <button className="git-icon" aria-label="切换 Git 列表" aria-pressed={rail} onClick={() => setRail(!rail)}>
+      <button className="git-icon" aria-label="切换 Git 列表" aria-pressed={railShown} onClick={() => setRailShown(!railShown)}>
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11zM6 3.5v9"/></svg>
       </button>
       <button className="git-icon" aria-label={`阅读方式 ${readings[reading]}`} title={`阅读方式：${readings[reading]}（点击切换）`}
@@ -359,21 +553,28 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
       </button>
     </header>
     {error ? <div className="git-note" role="alert">{error}</div> : !overview ? <div className="git-note">正在读取 Git…</div>
-      : <div className="git-body" ref={body} data-rail={rail ? 'shown' : 'hidden'} style={{ '--rail-width': `${railWidth}px` } as CSSProperties}>
+      : <div className="git-body" ref={body} data-rail={railShown ? 'shown' : 'hidden'} style={{ '--rail-width': `${railWidth}px` } as CSSProperties}>
         <div className="git-rail-wrap">
-          <nav className="git-rail" aria-label="Git 改动与历史" onScroll={endReached} onWheel={endReached}>
+          <nav className="git-rail" aria-label="Git 改动与历史" onScroll={endReached} onWheel={endReached}
+            onClick={(event) => {
+              const row = (event.target as HTMLElement).closest<HTMLElement>('[data-row]');
+              if (row) occupy(row);
+            }}>
             {!overview.changes.length && <div className="git-note">工作区干净</div>}
-            {(Object.entries(stages) as [Stage, string][]).map(([stage, title]) => {
+            {(Object.entries(stages) as [Stage, string][]).map(([stage, label]) => {
               const files = overview.changes.filter(file => file.stage === stage);
-              return files.length > 0 && <details key={stage} open><summary>{title} <small>{files.length}</small></summary>
-                {files.map(file => <FileRow key={file.path} file={file} select={() => show({ ...file, source: stage })} />)}
+              const row = rowKey.stage(stage);
+              return files.length > 0 && <details key={stage} data-stage={stage} open={!folded.includes(stage)}
+                onToggle={(event) => foldTo(event.currentTarget, !event.currentTarget.open)}>
+                <summary data-row={row} data-cursor={mark(cursor, row)}>{label} <small>{files.length}</small></summary>
+                {files.map(file => <FileRow key={file.path} file={file} row={rowKey.change(stage, file.path)} cursor={cursor} select={() => show({ ...file, source: stage })} />)}
               </details>;
             })}
             {overview.truncated && <div className="git-note">仅显示前 1000 项改动</div>}
             <div className="git-gap" />
             <div className="git-history">
               {overview.commits.map(commit => <CommitRow key={`${overview.root}:${commit.sha}`} commit={commit} context={context} terminal={terminal} root={overview.root}
-                selected={opened === commit.sha} toggle={() => setOpened(opened === commit.sha ? null : commit.sha)} select={show} />)}
+                cursor={cursor} selected={opened === commit.sha} toggle={() => setOpened(opened === commit.sha ? null : commit.sha)} select={show} />)}
               {!overview.commits.length && <div className="git-note">暂无提交</div>}
             </div>
           </nav>
@@ -387,7 +588,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         <div className="git-board">
           {comparison ? <section className="git-pane" aria-label={`Diff ${comparison.path}`}
             onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY }); }}>
-            <DiffPane key={JSON.stringify(comparison)} context={context} terminal={terminal} holder={holder} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} caret={caret} source={`${pageReads}:${sides(comparison, overview, appliedReads)}`} />
+            <DiffPane key={paneKey(comparison)} context={context} terminal={terminal} holder={holder} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} caret={caret} keys={keys} leave={leaveDiff} source={`${pageReads}:${sides(comparison, overview, appliedReads)}`} />
           </section> : <div className="git-note">选择文件查看 diff</div>}
         </div>
       </div>}
