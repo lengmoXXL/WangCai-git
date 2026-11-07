@@ -497,6 +497,19 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     const row = heldRow() ?? rows()[0];
     if (row) occupy(row);
   };
+  // The file the toolbar opens and `<leader>gf` opens: the click a view of its own then shows, at the caret it shows it at.
+  const openFile = () => {
+    if (!overview || !comparison || comparison.status === 'D') return;
+    void context.global.publish('onclick', {
+      type: 'file', machine: terminal.machine,
+      path: absolute(overview.root, comparison.path),
+      line: caret.current?.line, column: caret.current?.column,
+    } satisfies FileClick).catch((error: Error) => setError(error.message));
+  };
+  // The window matches the leader before any page hears it, so the key arrives as an event: every mounted tab is told,
+  // and the one on show is the one that answers.
+  useEffect(() => context.global.subscribe('git:open-file', () => { if (body.current?.checkVisibility()) openFile(); }),
+    [context, terminal, overview, comparison]);
   // The rail answers the keys the way a vim list does. The diff and the width handle read their own keys, so a press made
   // in either is not a press for the rail.
   useEffect(() => {
@@ -541,11 +554,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h8a2 2 0 1 1 0 4H8M2.5 12h3"/><path d="M9.4 10.6 8 12l1.4 1.4"/></svg>
       </button>
       <button className="git-icon" aria-label="打开文件" title={comparison?.status === 'D' ? '文件已删除' : '打开文件（工作区版本）'}
-        disabled={!overview || !comparison || comparison.status === 'D'} onClick={() => void context.global.publish('onclick', {
-          type: 'file', machine: terminal.machine,
-          path: absolute(overview!.root, comparison!.path),
-          line: caret.current?.line, column: caret.current?.column,
-        } satisfies FileClick).catch((error: Error) => setError(error.message))}>
+        disabled={!overview || !comparison || comparison.status === 'D'} onClick={openFile}>
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M9 13.5H2.5v-11h5l3 3V7M7.5 2.5v3h3M7 10h7m-3-3 3 3-3 3"/></svg>
       </button>
       <button className="git-icon" aria-label="上一处改动" title="上一处改动（[c）" disabled={!comparison || !blocks}

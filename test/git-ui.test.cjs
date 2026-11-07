@@ -576,7 +576,7 @@ test('A pane that answers with a note leaves the next diff without the keys', { 
 test('The rail answers hjkl, hands the keys to the diff, and the diff answers the motions of a vim reader', { timeout: caseTimeout }, () => withGitApp('wangcai-git-keys',
   gitLists,
   async ({ home, env, page }) => {
-    await readLongChange(page, home, env, 'keys.ts');
+    const file = await readLongChange(page, home, env, 'keys.ts');
     const closedSections = () => gitRail(page).locator('details:not([open])');
     // The keys belong to the panel: a row with the focus is enough for the first press, which enters at the top.
     await railFiles(page).first().focus();
@@ -627,6 +627,14 @@ test('The rail answers hjkl, hands the keys to the diff, and the diff answers th
     await page.keyboard.press('g');
     await page.keyboard.press('g');
     await until(() => diffShowsLine(page, 'const line1 = 1 + 1;'));
+    // `<leader>gf` opens the file the diff holds, as the same click the toolbar publishes, at the caret it holds.
+    await catchClicks(page);
+    await page.keyboard.press('Control+Space');
+    await page.keyboard.type('gf');
+    await until(async () => {
+      const click = await lastClick(page);
+      return click?.path === file && click.line === 1;
+    });
     await page.keyboard.press('Control+ArrowLeft');
     await page.keyboard.press('j');
     assert.match(await heldKey(page), /^commit:/, 'j walks down from the change to the commit row');
