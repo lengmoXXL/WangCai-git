@@ -4,9 +4,9 @@ import { createRoot } from 'react-dom/client';
 import * as monaco from 'monaco-editor/editor/editor.api.js';
 import 'monaco-editor/features/codicon/register.js';
 import 'monaco-editor/basic-languages/monaco.contribution.js';
-import 'monaco-editor/editor/contrib/find/browser/findController.js';
 import type { FileClick, Theme, WorkspaceActive } from '@lengmoxxl/sdk';
 import type { TabRecord, UiContext } from '@lengmoxxl/sdk/channel';
+import { bindKeys, pressIn } from '@lengmoxxl/sdk/keys';
 import type { Commit, Comparison, Diff, Font, GitFile, History, Overview, Settings, Stage } from './shared';
 import './style.css';
 
@@ -28,16 +28,6 @@ const rowKey = {
 
 // The mark a row draws while the keys hold it: an empty value the walk reads back off the page.
 const mark = (cursor: string, row: string) => cursor === row ? '' : undefined;
-
-// `gg` is the one press that waits for a second: the next key either completes it or drops it.
-const doubleG = () => {
-  let waiting = false;
-  return (key: string, jump: () => void) => {
-    if (key === 'g' && waiting) { waiting = false; jump(); return true; }
-    waiting = key === 'g';
-    return waiting;
-  };
-};
 
 function editorTheme(theme: Theme): monaco.editor.IStandaloneThemeData {
   const hex = (color: string) => color.slice(1);
@@ -126,53 +116,57 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, leave }: {
     const at = caret.current && { lineNumber: caret.current.line, column: caret.current.column };
     if (at) { side.setPosition(at); side.revealPositionInCenter(at); }
     const moved = side.onDidChangeCursorPosition(({ position }) => { caret.current = { line: position.lineNumber, column: position.column }; });
-    const gg = doubleG();
-    // The keys a vim reader reaches for in a read-only diff: j and k walk the lines, h and l the columns, a page takes
-    // the caret and the view together, 0 and $ walk to the ends of a line, and G and `gg` to the ends of the file, with
-    // each arrow key standing beside its letter. Monaco keeps every binding this does not read.
-    const vim = (event: KeyboardEvent) => {
-      if (event.metaKey || event.altKey) return;
-      // A box the editor opens over the diff keeps its own letters, so the find field can be typed in.
-      if (event.target instanceof HTMLElement && event.target.closest('.find-widget')) return;
-      const model = side.getModel()!;
-      const now = side.getPosition() ?? { lineNumber: 1, column: 1 };
-      const last = model.getLineCount();
-      const lineHeight = side.getOption(monaco.editor.EditorOption.lineHeight) || 1;
-      const screenful = Math.max(1, Math.floor(side.getLayoutInfo().height / lineHeight) - 1);
-      const go = (line: number) => {
-        const seat = { lineNumber: Math.min(last, Math.max(1, line)), column: 1 };
-        side.setPosition(seat);
-        side.revealPositionInCenterIfOutsideViewport(seat);
-      };
-      const scroll = (lines: number) => { side.setScrollTop(side.getScrollTop() + lines * lineHeight); go(now.lineNumber + lines); };
-      const column = (value: number) => side.setPosition({ lineNumber: now.lineNumber, column: Math.min(model.getLineMaxColumn(now.lineNumber), Math.max(1, value)) });
-      const key = event.key;
-      let motion: (() => void) | undefined;
-      if (event.ctrlKey) {
-        if (key === 'd') motion = () => scroll(Math.round(screenful / 2));
-        else if (key === 'u') motion = () => scroll(-Math.round(screenful / 2));
-        else if (key === 'f') motion = () => scroll(screenful);
-        else if (key === 'b') motion = () => scroll(-screenful);
-        // The rail is the pane to the left, which is where Ctrl+h takes the keys.
-        else if (key === 'h' || key === 'ArrowLeft') motion = leave;
-      } else if (key === 'j' || key === 'ArrowDown') motion = () => go(now.lineNumber + 1);
-      else if (key === 'k' || key === 'ArrowUp') motion = () => go(now.lineNumber - 1);
-      else if (key === 'h' || key === 'ArrowLeft') motion = () => column(now.column - 1);
-      else if (key === 'l' || key === 'ArrowRight') motion = () => column(now.column + 1);
-      else if (key === '0' || key === 'Home') motion = () => column(1);
-      else if (key === '$' || key === 'End') motion = () => column(model.getLineMaxColumn(now.lineNumber));
-      else if (key === 'G') motion = () => go(last);
-      // `gg` spans two presses, so it reports for itself whether the press was its own; one key is claimed here, once.
-      const claimed = gg(key, () => go(1));
-      if (!motion && !claimed) return;
-      motion?.();
-      event.preventDefault();
-      event.stopPropagation();
+    // The model the pane draws is the one set above and keeps its text in place, so both it and the line height are read
+    // once; the caret and the layout are what the keys have to read fresh.
+    const model = side.getModel()!;
+    const lineHeight = side.getOption(monaco.editor.EditorOption.lineHeight) || 1;
+    const screenful = () => Math.max(1, Math.floor(side.getLayoutInfo().height / lineHeight) - 1);
+    const now = () => side.getPosition() ?? { lineNumber: 1, column: 1 };
+    const go = (line: number) => {
+      const seat = { lineNumber: Math.min(model.getLineCount(), Math.max(1, line)), column: 1 };
+      side.setPosition(seat);
+      side.revealPositionInCenterIfOutsideViewport(seat);
     };
-    container.addEventListener('keydown', vim, true);
+    const scroll = (lines: number) => { side.setScrollTop(side.getScrollTop() + lines * lineHeight); go(now().lineNumber + lines); };
+    const column = (value: number) => {
+      const here = now();
+      side.setPosition({ lineNumber: here.lineNumber, column: Math.min(model.getLineMaxColumn(here.lineNumber), Math.max(1, value)) });
+    };
+    const lineDown = () => go(now().lineNumber + 1);
+    const lineUp = () => go(now().lineNumber - 1);
+    const caretLeft = () => column(now().column - 1);
+    const caretRight = () => column(now().column + 1);
+    const lineStart = () => column(1);
+    const lineEnd = () => column(model.getLineMaxColumn(now().lineNumber));
+    // The keys a vim reader reaches for in a read-only diff, kept beside Monaco's own, which keeps every binding this does
+    // not read.
+    // The keys are bound to the host because that is what a press made inside the shadow tree is retargeted to.
+    const unbind = bindKeys(element.current!, [
+      { keys: '<C-d>', run: () => scroll(Math.round(screenful() / 2)) },
+      { keys: '<C-u>', run: () => scroll(-Math.round(screenful() / 2)) },
+      { keys: '<C-f>', run: () => scroll(screenful()) },
+      { keys: '<C-b>', run: () => scroll(-screenful()) },
+      // The rail is the pane to the left, which is where Ctrl+h takes the keys.
+      { keys: '<C-h>', run: leave },
+      { keys: '<C-Left>', run: leave },
+      { keys: 'j', run: lineDown },
+      { keys: '<Down>', run: lineDown },
+      { keys: 'k', run: lineUp },
+      { keys: '<Up>', run: lineUp },
+      { keys: 'h', run: caretLeft },
+      { keys: '<Left>', run: caretLeft },
+      { keys: 'l', run: caretRight },
+      { keys: '<Right>', run: caretRight },
+      { keys: '0', run: lineStart },
+      { keys: '<Home>', run: lineStart },
+      { keys: '$', run: lineEnd },
+      { keys: '<End>', run: lineEnd },
+      { keys: 'G', run: () => go(model.getLineCount()) },
+      { keys: 'gg', run: () => go(1) },
+    ], { fields: 'all' });
     keys.current.enter = () => side.focus();
     editor.current = view;
-    return () => { keys.current.enter = undefined; container.removeEventListener('keydown', vim, true); moved.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
+    return () => { keys.current.enter = undefined; unbind(); moved.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
   }, [path]);
   // A read of the file the pane already shows rewrites the two sides where they stand: only the lines that changed
   // redraw, and the caret and the scroll it was left at survive unless that scroll no longer shows the caret.
@@ -352,8 +346,6 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   // Set while a press opens a file: it makes that choice the one the keys wait for, and it is what tells a press on the
   // diff the pane already shows apart from a click on the same row.
   const pressing = useRef(false);
-  // The rail's `gg` outlives the renders its listener is rebuilt on, so two presses count as one.
-  const gg = useRef(doubleG()).current;
   const railMinimum = 180;
   const railMaximum = Math.round((body.current?.clientWidth ?? 0) * 0.7);
   const clampWidth = (requested: number) => Math.round(Math.max(railMinimum, Math.min(railMaximum, requested)));
@@ -494,34 +486,32 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     const row = heldRow() ?? rows()[0];
     if (row) occupy(row);
   };
-  // The rail answers the keys the way a vim list does: j and k walk the rows on screen, h closes what is open around
-  // the cursor, l and Enter are the press the row itself would get, and `gg` and `G` are the two ends, with each arrow
-  // key standing beside its letter.
+  // The rail answers the keys the way a vim list does. The diff and the width handle read their own keys, so a press made
+  // in either is not a press for the rail.
   useEffect(() => {
     const panel = body.current?.closest<HTMLElement>('.sidebar-panel');
     if (!panel) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (!(event.target instanceof Node) || !panel.contains(event.target) || event.metaKey || event.altKey) return;
-      // The diff and the width handle read their own keys: a press made in either is not a press for the rail.
-      if (event.composedPath().some((node) => node instanceof HTMLElement && (node.classList.contains('git-editor') || node.classList.contains('git-divider')))) return;
-      const key = event.key;
-      let action: (() => void) | undefined;
-      // The diff is the pane to the right, so Ctrl+l hands the keys to it.
-      if (event.ctrlKey) {
-        if (key === 'l' || key === 'ArrowRight') action = () => keys.current.enter?.();
-      } else if (key === 'j' || key === 'ArrowDown') action = () => step(1);
-      else if (key === 'k' || key === 'ArrowUp') action = () => step(-1);
-      else if (key === 'G') action = () => jump('last');
-      else if (key === 'l' || key === 'ArrowRight' || key === 'Enter') action = into;
-      else if (key === 'h' || key === 'ArrowLeft') action = out;
-      // `gg` spans two presses, so it reports for itself whether the press was its own; one key is claimed here, once.
-      const claimed = gg(key, () => jump('first'));
-      if (!action && !claimed) return;
-      event.preventDefault();
-      action?.();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // The diff is the pane to the right, so Ctrl+l hands the keys to it.
+    const toDiff = () => keys.current.enter?.();
+    const down = () => step(1);
+    const up = () => step(-1);
+    return bindKeys(panel, [
+      { keys: '<C-l>', run: toDiff },
+      { keys: '<C-Right>', run: toDiff },
+      { keys: 'j', run: down },
+      { keys: '<Down>', run: down },
+      { keys: 'k', run: up },
+      { keys: '<Up>', run: up },
+      { keys: 'G', run: () => jump('last') },
+      { keys: 'gg', run: () => jump('first') },
+      { keys: 'l', run: into },
+      { keys: '<Right>', run: into },
+      { keys: '<Enter>', run: into },
+      { keys: 'h', run: out },
+      { keys: '<Left>', run: out },
+    ], {
+      ignore: (event) => pressIn(event, '.git-editor, .git-divider'),
+    });
   });
   return <section className="git-page" aria-label="Git history" data-reading={reading}>
     <header className="git-toolbar">
