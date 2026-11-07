@@ -46,20 +46,19 @@ const openView = async (page, name) => {
 /** The sidebar's tabs as the window draws them. */
 const viewTabs = (page) => page.locator('.sidebar-tab:visible');
 
-/** Closes the sidebar tab that is selected. */
-const closeView = (page) => page.locator('.sidebar-tab:has([aria-selected=true]) .close-tab').click();
-
 const directory = resolve(__dirname, '..');
 const caseTimeout = 180000;
 // The page reads the repository by itself every pollMilliseconds (ui.tsx), so a window meant to outlast one read is a
 // poll plus what that case needs.
 const poll = 3000;
 
-const filesPanel = '.sidebar-panel[data-plugin=files]';
-const shownPanel = (page) => page.locator(`${filesPanel}:visible`);
-// The class the files preview carries, which the locator below and the in-page read of it address.
-const previewHost = '.code-preview';
-const shownPreview = (page) => shownPanel(page).locator(previewHost);
+// The file click the toolbar publishes when it opens a file, caught on the page instead of in a view of its own.
+const catchClicks = (page) => page.evaluate(() => {
+  window.__clicks = [];
+  window.wangcai.subscribe('onclick', (file) => window.__clicks.push(file));
+});
+const lastClick = (page) => page.evaluate(() => window.__clicks.at(-1));
+const clickCount = (page) => page.evaluate(() => window.__clicks.length);
 // The class names the rail and the page's notes carry, which more than one locator builds on.
 const gitFile = '.git-file';
 const gitNote = '.git-note';
@@ -113,8 +112,7 @@ const repoIn = (home, env, name) => {
   return { repo, git };
 };
 
-// A file long enough that a line deep in it is only drawn once a pane is scrolled to it, and every line different, so
-// the page hides no region of it.
+// A file long enough that a line deep in it is only drawn once a pane is scrolled to it.
 const longSource = (suffix) => Array.from({ length: 200 }, (_, index) => `const line${index + 1} = ${index + 1}${suffix};\n`).join('');
 
 // A repository whose one long file was committed and then changed on every line — so a diff redraws wholly and a pane
@@ -129,20 +127,16 @@ const readLongChange = async (page, home, env, name) => {
   return file;
 };
 
-// Whether an editor draws a line inside its own pane, compared by the plain spaces the file holds rather than the
-// non-breaking ones a preview draws them as.
-const draws = (page, host, inside, text) => page.evaluate(([host, inside, eachLine, text]) => {
-  const element = document.querySelector(host);
-  const root = (element.shadowRoot ?? element).querySelector(inside);
+// Whether the diff draws that line on its modified side and inside the pane. Monaco writes the spaces of the file as
+// non-breaking ones, so the line is compared as plain spaces.
+const diffShowsLine = (page, text) => page.evaluate(([host, side, eachLine, text]) => {
+  const root = document.querySelector(host).shadowRoot.querySelector(side);
   const line = [...root.querySelectorAll(eachLine)].find((node) => node.textContent.replace(/\u00a0/g, ' ') === text);
   if (!line) return false;
   const box = line.getBoundingClientRect();
   const rootBox = root.getBoundingClientRect();
   return box.top >= rootBox.top && box.bottom <= rootBox.bottom;
-}, [host, inside, eachLine, text]);
-
-// Whether the diff draws that line on its modified side.
-const diffShowsLine = (page, text) => draws(page, diffHost, diffSide, text);
+}, [diffHost, diffSide, eachLine, text]);
 
 // Whether the keys are inside the diff's modified side, which is where the diff's own motions read them.
 const inDiff = (page) => page.evaluate(([host, side]) => {
@@ -152,7 +146,6 @@ const inDiff = (page) => page.evaluate(([host, side]) => {
 
 const gitTab = { id: 'git', directory };
 const gitLists = { workspaces: ['terminal-agent'], tabs: [gitTab] };
-const gitListsWithFiles = { workspaces: ['terminal-agent'], tabs: ['files', gitTab] };
 const gitListsNoAutoRefresh = { workspaces: ['terminal-agent'], tabs: [{ ...gitTab, config: { autoRefresh: false } }] };
 
 // One case with the Git view open, a local workspace it follows, and no error on the page by the end.
@@ -167,8 +160,7 @@ const withGitApp = (prefix, lists, body) => withWindow(prefix, lists, async (con
 
 // These checks need the same repository and the same window, so they share one case.
 test('A Git tab follows the terminal, opens files from every list, and shows one read-only diff with its rail card', { timeout: caseTimeout }, () => withGitApp('wangcai-git-ui',
-  // Opening a file hands it to the `files` view, so that plugin is listed beside this one.
-  gitListsWithFiles,
+  gitLists,
   async ({ home, env, page }) => {
     const { repo, git } = repoIn(home, env, "repo with 'quote");
     const sample = join(repo, 'sample.ts');
@@ -215,12 +207,9 @@ test('A Git tab follows the terminal, opens files from every list, and shows one
     assert.equal(font.fontSize, '12px');
     assert.match(font.fontFamily, /^"DejaVuSansM Nerd Font Mono"/);
     assert.ok(await openFile(page).isEnabled());
+    await catchClicks(page);
     await openFile(page).click();
-    const previewLines = shownPreview(page).locator(allLines);
-    const previewPath = shownPanel(page).locator('.preview-path');
-    await previewLines.filter({ hasText: 'WORKTREE_VALUE' }).waitFor();
-    assert.equal(await previewPath.getAttribute('title'), sample);
-    await closeView(page);
+    await until(async () => (await lastClick(page))?.path === sample);
     await sectionFiles(page, '未暂存').first().click();
     await modifiedLines(page).filter({ hasText: 'WORKTREE_VALUE' }).waitFor();
     await diffEditor(page).first().evaluate((element) => { element.dataset.kept = 'yes'; });
@@ -235,18 +224,9 @@ test('A Git tab follows the terminal, opens files from every list, and shows one
     assert.equal(await readingPage(page, 'split').count(), 1);
     assert.equal(await page.getByRole('button', { name: '阅读方式 双栏' }).count(), 1);
     await diffEditor(page, '.side-by-side').waitFor();
-    const unfold = page.locator(`${diffHost} .codicon-unfold:visible`).first();
-    const iconFont = await unfold.evaluate(async (element) => {
-      const style = getComputedStyle(element, '::before');
-      const faces = await document.fonts.load('16px codicon', style.content.slice(1, -1));
-      return { family: style.fontFamily, loaded: faces.length > 0 };
-    });
-    assert.equal(iconFont.family, 'codicon', 'the expand icon uses the icon font, not the code font');
-    assert.ok(iconFont.loaded, 'the expand icon font is bundled and loads successfully');
-    await unfold.click();
-    await unfold.waitFor({ state: 'hidden' });
-    await page.locator(`${diffHost} ${diffOriginal} .fold-unchanged:visible`).first().click();
-    await unfold.waitFor();
+    const iconFontLoaded = await page.evaluate(async () => (await document.fonts.load('16px codicon')).length > 0);
+    assert.ok(iconFontLoaded, 'the icon font is bundled and loads successfully');
+    assert.equal(await page.locator(`${diffHost} .diff-hidden-lines-widget`).count(), 0, 'an unchanged line is never folded away');
     await readingButton.click();
     assert.equal(await readingPage(page, 'inline').count(), 1);
     await diffEditor(page, ':not(.side-by-side)').waitFor();
@@ -325,10 +305,10 @@ test('A Git tab follows the terminal, opens files from every list, and shows one
     assert.equal(await tip.count(), 0);
     await commitFiles(page).first().click();
     await diffLines(page).filter({ hasText: 'ORIGINAL_VALUE' }).waitFor();
+    const before = await clickCount(page);
     await openFile(page).click();
-    await previewLines.filter({ hasText: 'WORKTREE_VALUE' }).waitFor();
-    assert.equal(await previewPath.getAttribute('title'), sample, 'history opens the current working-tree file');
-    await closeView(page);
+    // A commit's file opens the copy the working tree holds, not the one the commit does.
+    await until(async () => (await clickCount(page)) > before && (await lastClick(page))?.path === sample);
     const deleted = join(repo, 'deleted.ts');
     writeFileSync(deleted, 'const deleted = true;\n');
     git('add', 'deleted.ts'); git('commit', '-qm', 'add file to delete');
@@ -477,7 +457,7 @@ test('A diff pane closes when the change it shows leaves the list', { timeout: c
   }));
 
 test('The diff hands its caret to the opened file and keeps it across reads', { timeout: caseTimeout }, () => withGitApp('wangcai-git-caret',
-  gitListsWithFiles,
+  gitLists,
   async ({ home, env, page }) => {
     const name = 'long.ts';
     const long = await readLongChange(page, home, env, name);
@@ -487,16 +467,12 @@ test('The diff hands its caret to the opened file and keeps it across reads', { 
     // redraws under it, and a pane opens with the caret on its first line.
     await page.evaluate(([host, side]) => document.querySelector(host).shadowRoot.querySelector(`${side} [tabindex="0"]`).focus(), [diffHost, diffSide]);
     for (let step = 0; step < 149; step++) await page.keyboard.press('ArrowDown');
+    await catchClicks(page);
     await openFile(page).click();
-    // The line is read off the page, so the preview has to have drawn it before it can be found.
-    await shownPreview(page).locator(eachLine).first().waitFor();
-    // The toolbar carries the caret to the file it opens, and the preview lands on that same line and column.
-    const opened = await page.evaluate(async () => Object.values(await window.wangcai.call('request', 'files', 'history'))[0].entries[0]);
-    assert.ok(opened.line > 100, `the caret was deep in the file, not near its top: line ${opened.line}`);
-    assert.equal(opened.column, 1);
-    assert.ok(await draws(page, `${filesPanel} ${previewHost}`, monacoEditor, `const line${opened.line} = ${opened.line} + 1;`), 'the preview jumps to the line the diff shows');
-    // The preview took the sidebar, and a page that is off show draws no line of its file, so the Git tab comes back.
-    await closeView(page);
+    // The toolbar carries the caret to the file it opens, as the line and column of the click it publishes.
+    await until(async () => (await lastClick(page))?.line > 100);
+    const click = await lastClick(page);
+    assert.equal(click.column, 1);
     // A read that brings new text rewrites the sides the pane holds, so the editor that draws again is the one already
     // on screen: a marker set on it now is still there after the read.
     await diffEditor(page).first().evaluate((element) => { element.dataset.kept = 'changed'; });
@@ -504,30 +480,71 @@ test('The diff hands its caret to the opened file and keeps it across reads', { 
     // The write reaches the pane through the watch on the file, and a poll inside this window covers a watch that did not.
     await page.waitForTimeout(poll + 1000);
     assert.equal(await diffEditor(page, '[data-kept=changed]').count(), 1, 'the read redraws the diff instead of building another editor');
-    assert.ok(await diffShowsLine(page, `const line${opened.line} = ${opened.line} + 2;`), 'the redrawn diff is still at the caret');
+    assert.ok(await diffShowsLine(page, `const line${click.line} = ${click.line} + 2;`), 'the redrawn diff is still at the caret');
   }));
-test('A read of a changed file leaves its folded regions folded', { timeout: caseTimeout }, () => withGitApp('wangcai-git-fold',
+test('A diff draws the lines it does not change, and a read keeps them drawn', { timeout: caseTimeout }, () => withGitApp('wangcai-git-lines',
   gitLists,
   async ({ home, env, page }) => {
     const { repo, git } = repoIn(home, env, 'repo');
-    const file = join(repo, 'folded.ts');
-    // The change takes the first line and the tail is long enough to be folded away, so the changed line stays in view.
+    const file = join(repo, 'drawn.ts');
+    // Only the first line changes, so every other line is one the pane has nothing to say about.
     const tail = Array.from({ length: 40 }, (_, index) => `const line${index} = ${index};\n`).join('');
     writeFileSync(file, `const value = 'ONE';\n${tail}`);
-    git('add', 'folded.ts'); git('commit', '-qm', 'initial commit');
+    git('add', 'drawn.ts'); git('commit', '-qm', 'initial commit');
     writeFileSync(file, `const value = 'TWO';\n${tail}`);
     await readRepo(page, repo, 'repo');
-    await sectionFiles(page, '未暂存').filter({ hasText: 'folded.ts' }).click();
+    await sectionFiles(page, '未暂存').filter({ hasText: 'drawn.ts' }).click();
     await modifiedLines(page).filter({ hasText: 'TWO' }).waitFor();
-    // A fold arrives once the pane has computed the diff of the sides it set, so the baseline is where it lands.
-    await page.locator(`${diffHost} .diff-hidden-lines-widget`).first().waitFor();
-    assert.equal(await diffLines(page).filter({ hasText: 'const line20 = 20;' }).count(), 0, 'the unchanged tail is folded away');
+    await modifiedLines(page).filter({ hasText: 'const line0 = 0;' }).waitFor();
+    assert.equal(await page.locator(`${diffHost} .diff-hidden-lines-widget`).count(), 0, 'no unchanged region is folded away');
     // The file the pane shows is watched, so writing it reads the diff again.
     writeFileSync(file, `const value = 'THREE';\n${tail}`);
     await modifiedLines(page).filter({ hasText: 'THREE' }).waitFor();
     // The diff is recomputed once the pane has the new text, a debounced step the window below covers.
     await page.waitForTimeout(1000);
-    assert.equal(await diffLines(page).filter({ hasText: 'const line20 = 20;' }).count(), 0, 'the read leaves the tail folded');
+    assert.equal(await modifiedLines(page).filter({ hasText: 'const line0 = 0;' }).count(), 1, 'the read leaves the unchanged lines drawn');
+    assert.equal(await page.locator(`${diffHost} .diff-hidden-lines-widget`).count(), 0, 'the read folds nothing away either');
+  }));
+test('The diff steps through its changes with ]c, [c and the toolbar buttons', { timeout: caseTimeout }, () => withGitApp('wangcai-git-jump',
+  gitLists,
+  async ({ home, env, page }) => {
+    const { repo, git } = repoIn(home, env, 'repo');
+    const name = 'jumps.ts';
+    const file = join(repo, name);
+    // Two changes far apart, so only one of them is in view at a time.
+    const source = (first, second) => Array.from({ length: 200 }, (_, index) => index === 9 ? `const a = '${first}';\n`
+      : index === 189 ? `const b = '${second}';\n` : `const line${index} = ${index};\n`).join('');
+    writeFileSync(file, source('ONE', 'ONE'));
+    git('add', '.'); git('commit', '-qm', 'initial commit');
+    writeFileSync(file, source('TWO', 'TWO'));
+    await readRepo(page, repo, 'repo');
+    const previous = page.getByRole('button', { name: '上一处改动' });
+    const next = page.getByRole('button', { name: '下一处改动' });
+    assert.ok(await previous.isDisabled(), 'the buttons wait for a diff to step through');
+    assert.ok(await next.isDisabled(), 'the buttons wait for a diff to step through');
+    // The keys that open the file are the ones the diff reads afterwards, which is what makes ]c and [c the pane's own.
+    await sectionFiles(page, '未暂存').filter({ hasText: name }).focus();
+    await page.keyboard.press('k');
+    await page.keyboard.press('j');
+    await page.keyboard.press('l');
+    await until(() => inDiff(page));
+    await until(() => diffShowsLine(page, "const a = 'TWO';"));
+    await until(() => next.isEnabled());
+    // The first jump lands on the change the caret opens above, the second on the one below it, the third wraps.
+    await page.keyboard.type(']c');
+    await until(() => diffShowsLine(page, "const a = 'TWO';"));
+    await page.keyboard.type(']c');
+    await until(() => diffShowsLine(page, "const b = 'TWO';"));
+    await page.keyboard.type(']c');
+    await until(() => diffShowsLine(page, "const a = 'TWO';"));
+    // The previous change wraps the other way, from the first change to the last.
+    await page.keyboard.type('[c');
+    await until(() => diffShowsLine(page, "const b = 'TWO';"));
+    // The toolbar buttons ask for the same jumps the keys ask for.
+    await next.click();
+    await until(() => diffShowsLine(page, "const a = 'TWO';"));
+    await previous.click();
+    await until(() => diffShowsLine(page, "const b = 'TWO';"));
   }));
 test('A pane that answers with a note leaves the next diff without the keys', { timeout: caseTimeout }, () => withGitApp('wangcai-git-take',
   gitLists,
@@ -591,12 +608,12 @@ test('The rail answers hjkl, hands the keys to the diff, and the diff answers th
     const carets = page.locator(`${diffHost} ${diffSide} .cursors-layer`);
     assert.match(await carets.getAttribute('class'), /\bcursor-block-style\b/, 'the diff holds its caret as a block, the way vim draws one');
     // The two panes hand the keys back and forth along the row they sit in.
-    await page.keyboard.press('Control+h');
-    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-row')), 'change:unstaged:keys.ts', 'Ctrl+h returns the keys to the row the rail left them on');
-    await page.keyboard.press('Control+l');
+    await page.keyboard.press('Control+ArrowLeft');
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-row')), 'change:unstaged:keys.ts', 'Ctrl+Left returns the keys to the row the rail left them on');
+    await page.keyboard.press('Control+ArrowRight');
     await until(() => inDiff(page));
     // A press on the row whose diff the rail already shows hands the keys back to that same editor.
-    await page.keyboard.press('Control+h');
+    await page.keyboard.press('Control+ArrowLeft');
     await page.keyboard.press('l');
     await until(() => inDiff(page));
     await until(() => diffShowsLine(page, 'const line1 = 1 + 1;'));
@@ -610,7 +627,7 @@ test('The rail answers hjkl, hands the keys to the diff, and the diff answers th
     await page.keyboard.press('g');
     await page.keyboard.press('g');
     await until(() => diffShowsLine(page, 'const line1 = 1 + 1;'));
-    await page.keyboard.press('Control+h');
+    await page.keyboard.press('Control+ArrowLeft');
     await page.keyboard.press('j');
     assert.match(await heldKey(page), /^commit:/, 'j walks down from the change to the commit row');
     // The repository opens its first commit, so h closes that one where it stands.

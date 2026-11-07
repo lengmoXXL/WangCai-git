@@ -74,13 +74,14 @@ function editorTheme(theme: Theme): monaco.editor.IStandaloneThemeData {
 type Caret = { line: number; column: number };
 
 // How a press reaches the diff: a comparison the pane already shows hands the keys to the editor it holds, and any other
-// arrives as `take`, which the pane mounting for it spends. Both end in `enter`, which is what Ctrl+l calls. The way back
+// arrives as `take`, which the pane mounting for it spends. Both end in `enter`, which is what Ctrl+Right calls. The way
 // is the `leave` the pane is handed with its comparison.
 type Keys = { take?: Comparison; enter?: () => void };
+type Jump = { next: () => void; previous: () => void };
 
-function DiffEditor({ diff, path, reading, wrap, caret, keys, leave }: {
+function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes, leave }: {
   diff: Diff; path: string; reading: Reading; wrap: boolean; caret: RefObject<Caret | undefined>;
-  keys: RefObject<Keys>; leave: () => void;
+  keys: RefObject<Keys>; jumps: RefObject<Jump | undefined>; changes: (count: number) => void; leave: () => void;
 }) {
   const element = useRef<HTMLDivElement>(null);
   const editor = useRef<monaco.editor.IStandaloneDiffEditor>(undefined);
@@ -102,7 +103,7 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, leave }: {
     const view = monaco.editor.createDiffEditor(container, {
       theme: 'wangcai', readOnly: true, domReadOnly: true,
       automaticLayout: true, scrollBeyondLastLine: false,
-      renderOverviewRuler: false, hideUnchangedRegions: { enabled: true },
+      renderOverviewRuler: false,
       ...options, fontSize: size, lineHeight: font.lineHeight ? Math.round(size * font.lineHeight) : 0, fontFamily: font.family, lineNumbersMinChars: 3, contextmenu: false, cursorStyle: 'block',
     });
     const name = path.split('/').pop()!;
@@ -111,6 +112,11 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, leave }: {
     const modified = monaco.editor.createModel(diff.newText, language);
     view.setModel({ original, modified });
     view.getOriginalEditor().updateOptions({ glyphMargin: false });
+    jumps.current = { next: () => view.goToDiff('next'), previous: () => view.goToDiff('previous') };
+    // A pane that is set and never edited computes its diff then and there, so the blocks are counted once here as well.
+    const count = () => changes(view.getLineChanges()?.length ?? 0);
+    const updated = view.onDidUpdateDiff(count);
+    count();
     // The caret is taken from the side the diff draws as modified, the side a change leads to.
     const side = view.getModifiedEditor();
     const at = caret.current && { lineNumber: caret.current.line, column: caret.current.column };
@@ -146,8 +152,8 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, leave }: {
       { keys: '<C-u>', run: () => scroll(-Math.round(screenful() / 2)) },
       { keys: '<C-f>', run: () => scroll(screenful()) },
       { keys: '<C-b>', run: () => scroll(-screenful()) },
-      // The rail is the pane to the left, which is where Ctrl+h takes the keys.
-      { keys: '<C-h>', run: leave },
+      // The rail is the pane to the left. Ctrl+h belongs to the core, which moves between the workspace list and the
+      // page with it, so the arrow is the key that answers here.
       { keys: '<C-Left>', run: leave },
       { keys: 'j', run: lineDown },
       { keys: '<Down>', run: lineDown },
@@ -163,15 +169,17 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, leave }: {
       { keys: '<End>', run: lineEnd },
       { keys: 'G', run: () => go(model.getLineCount()) },
       { keys: 'gg', run: () => go(1) },
+      // vim's own ]c and [c walk a change at a time.
+      { keys: ']c', run: () => jumps.current?.next() },
+      { keys: '[c', run: () => jumps.current?.previous() },
     ], { fields: 'all' });
     keys.current.enter = () => side.focus();
     editor.current = view;
-    return () => { keys.current.enter = undefined; unbind(); moved.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
+    return () => { keys.current.enter = undefined; jumps.current = undefined; unbind(); updated.dispose(); moved.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
   }, [path]);
   // A read of the file the pane already shows rewrites the two sides where they stand: only the lines that changed
   // redraw, and the caret and the scroll it was left at survive unless that scroll no longer shows the caret.
-  // The sides are edited apart rather than set whole: a model set to a new value drops every decoration, and those
-  // decorations are where the diff keeps the state of its unchanged regions.
+  // The sides are edited apart rather than set whole: a model set to a new value drops every decoration.
   useEffect(() => {
     const view = editor.current!;
     const models = view.getModel()!;
@@ -224,8 +232,8 @@ const sides = (comparison: Comparison, overview: Overview, appliedReads: number)
   return overview.truncated ? `cut\0${appliedReads}` : 'gone';
 };
 
-function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, source, caret, keys, leave }: {
-  context: UiContext; terminal: WorkspaceActive; holder: string; root: string; comparison: Comparison; reading: Reading; wrap: boolean; source: string; caret: RefObject<Caret | undefined>; keys: RefObject<Keys>; leave: () => void;
+function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, source, caret, keys, jumps, changes, leave }: {
+  context: UiContext; terminal: WorkspaceActive; holder: string; root: string; comparison: Comparison; reading: Reading; wrap: boolean; source: string; caret: RefObject<Caret | undefined>; keys: RefObject<Keys>; jumps: RefObject<Jump | undefined>; changes: (count: number) => void; leave: () => void;
 }) {
   const [diff, setDiff] = useState<Diff>();
   const [error, setError] = useState('');
@@ -258,7 +266,7 @@ function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, 
   if (error) return <div className="git-note" role="alert">{error}</div>;
   if (!diff) return <div className="git-note">正在读取 diff…</div>;
   if (diff.notice) return <div className="git-note">{diff.notice}</div>;
-  return <DiffEditor diff={diff} path={comparison.path} reading={reading} wrap={wrap} caret={caret} keys={keys} leave={leave} />;
+  return <DiffEditor diff={diff} path={comparison.path} reading={reading} wrap={wrap} caret={caret} keys={keys} jumps={jumps} changes={changes} leave={leave} />;
 }
 
 function FileRow({ file, row, cursor, select }: { file: GitFile; row: string; cursor: string; select: () => void }) {
@@ -343,6 +351,8 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   const drag = useRef<{ origin: number; width: number }>(undefined);
   const caret = useRef<Caret>(undefined);
   const keys = useRef<Keys>({});
+  const jumps = useRef<Jump>(undefined);
+  const [blocks, setBlocks] = useState(0);
   // Set while a press opens a file: it makes that choice the one the keys wait for, and it is what tells a press on the
   // diff the pane already shows apart from a click on the same row.
   const pressing = useRef(false);
@@ -455,6 +465,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     }
     // A caret belongs to the diff that holds it, so another file forgets the one the last file was left at.
     caret.current = undefined;
+    setBlocks(0);
     if (fromPress) keys.current.take = next;
     setComparison(next);
   };
@@ -491,12 +502,11 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   useEffect(() => {
     const panel = body.current?.closest<HTMLElement>('.sidebar-panel');
     if (!panel) return;
-    // The diff is the pane to the right, so Ctrl+l hands the keys to it.
+    // The diff is the pane to the right, and the arrow hands it the keys: Ctrl+l is the core's own.
     const toDiff = () => keys.current.enter?.();
     const down = () => step(1);
     const up = () => step(-1);
     return bindKeys(panel, [
-      { keys: '<C-l>', run: toDiff },
       { keys: '<C-Right>', run: toDiff },
       { keys: 'j', run: down },
       { keys: '<Down>', run: down },
@@ -538,6 +548,14 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         } satisfies FileClick).catch((error: Error) => setError(error.message))}>
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M9 13.5H2.5v-11h5l3 3V7M7.5 2.5v3h3M7 10h7m-3-3 3 3-3 3"/></svg>
       </button>
+      <button className="git-icon" aria-label="上一处改动" title="上一处改动（[c）" disabled={!comparison || !blocks}
+        onClick={() => jumps.current?.previous()}>
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5 3.5 8M8 3.5 12.5 8M8 3.5v9"/></svg>
+      </button>
+      <button className="git-icon" aria-label="下一处改动" title="下一处改动（]c）" disabled={!comparison || !blocks}
+        onClick={() => jumps.current?.next()}>
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12.5 3.5 8M8 12.5 12.5 8M8 12.5v-9"/></svg>
+      </button>
       <button className="git-icon" aria-label="刷新 Git" disabled={loading} onClick={() => setToolbarRead(value => value + 1)}>
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 6.2A5 5 0 1 0 13 9"/><path d="M13.2 3v3.4h-3.4"/></svg>
       </button>
@@ -578,7 +596,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         <div className="git-board">
           {comparison ? <section className="git-pane" aria-label={`Diff ${comparison.path}`}
             onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY }); }}>
-            <DiffPane key={paneKey(comparison)} context={context} terminal={terminal} holder={holder} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} caret={caret} keys={keys} leave={leaveDiff} source={`${pageReads}:${sides(comparison, overview, appliedReads)}`} />
+            <DiffPane key={paneKey(comparison)} context={context} terminal={terminal} holder={holder} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} caret={caret} keys={keys} jumps={jumps} changes={setBlocks} leave={leaveDiff} source={`${pageReads}:${sides(comparison, overview, appliedReads)}`} />
           </section> : <div className="git-note">选择文件查看 diff</div>}
         </div>
       </div>}
