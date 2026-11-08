@@ -144,6 +144,12 @@ const inDiff = (page) => page.evaluate(([host, side]) => {
   return Boolean(active && active.closest(side));
 }, [diffHost, diffSide]);
 
+// Ctrl+h is answered in the main process, so the press that follows waits for the keys to land back in the rail.
+const toRail = async (page) => {
+  await page.keyboard.press('Control+h');
+  await until(() => gitRail(page).evaluate((rail) => rail.contains(document.activeElement)));
+};
+
 const gitTab = { id: 'git', directory };
 const gitLists = { workspaces: ['terminal-agent'], tabs: [gitTab] };
 const gitListsNoAutoRefresh = { workspaces: ['terminal-agent'], tabs: [{ ...gitTab, config: { autoRefresh: false } }] };
@@ -577,6 +583,10 @@ test('The rail answers hjkl, hands the keys to the diff, and the diff answers th
   gitLists,
   async ({ home, env, page }) => {
     const file = await readLongChange(page, home, env, 'keys.ts');
+    // Side by side, with a long line kept as one line, so the line a motion walks to is a line the pane draws whole.
+    await page.getByRole('button', { name: /^阅读方式/ }).click();
+    assert.equal(await readingPage(page, 'split').count(), 1);
+    await page.getByRole('button', { name: '长行折行' }).click();
     const closedSections = () => gitRail(page).locator('details:not([open])');
     // The keys belong to the panel: a row with the focus is enough for the first press, which enters at the top.
     await railFiles(page).first().focus();
@@ -607,13 +617,13 @@ test('The rail answers hjkl, hands the keys to the diff, and the diff answers th
     // The carets the diff draws, whose style the editor sets from its own options.
     const carets = page.locator(`${diffHost} ${diffSide} .cursors-layer`);
     assert.match(await carets.getAttribute('class'), /\bcursor-block-style\b/, 'the diff holds its caret as a block, the way vim draws one');
-    // The two panes hand the keys back and forth along the row they sit in.
-    await page.keyboard.press('Control+ArrowLeft');
-    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-row')), 'change:unstaged:keys.ts', 'Ctrl+Left returns the keys to the row the rail left them on');
-    await page.keyboard.press('Control+ArrowRight');
+    // The two panes hand the keys back and forth along the row they sit in, on the keys the page claims from the core.
+    await toRail(page);
+    assert.equal(await heldKey(page), 'change:unstaged:keys.ts', 'Ctrl+h returns the keys to the row the rail left them on');
+    await page.keyboard.press('Control+l');
     await until(() => inDiff(page));
     // A press on the row whose diff the rail already shows hands the keys back to that same editor.
-    await page.keyboard.press('Control+ArrowLeft');
+    await toRail(page);
     await page.keyboard.press('l');
     await until(() => inDiff(page));
     await until(() => diffShowsLine(page, 'const line1 = 1 + 1;'));
@@ -635,7 +645,7 @@ test('The rail answers hjkl, hands the keys to the diff, and the diff answers th
       const click = await lastClick(page);
       return click?.path === file && click.line === 1;
     });
-    await page.keyboard.press('Control+ArrowLeft');
+    await toRail(page);
     await page.keyboard.press('j');
     assert.match(await heldKey(page), /^commit:/, 'j walks down from the change to the commit row');
     // The repository opens its first commit, so h closes that one where it stands.
