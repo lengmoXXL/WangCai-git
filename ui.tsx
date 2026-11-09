@@ -361,6 +361,8 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   const [reading, setReading] = useState<Reading>('auto');
   const [wrap, setWrap] = useState(true);
   const [railShown, setRailShown] = useState(true);
+  // Whether the keys slid the hidden list out, as the pointer does: the slide goes away with the file it chose.
+  const [railPeek, setRailPeek] = useState(false);
   const [railWidth, setRailWidth] = useState(260);
   const [menu, setMenu] = useState<{ x: number; y: number }>();
   // The row the rail's keys hold, named by the row's own key, so a read that redraws the list leaves it on that row.
@@ -473,7 +475,9 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     setFolded((current) => closed ? (current.includes(stage) ? current : [...current, stage]) : current.filter((one) => one !== stage));
   };
   // Choosing a file from the rail: the pane it opens, and the keys the choice hands over.
+  // A file chosen out of the keys' own slide closes it, so the diff shows the board the reader left.
   const show = (next: Comparison) => {
+    setRailPeek(false);
     const fromPress = pressing.current;
     pressing.current = false;
     // The pane mounts per comparison, so a file it already shows settles nowhere and no render would spend the keys: a
@@ -512,11 +516,18 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     if (commit) commit.click();
     else if (row.getAttribute('aria-expanded') === 'true') row.click();
   };
-  // The diff hands the keys back to the row they were on, or to the top of the list when they were on none.
-  const leaveDiff = () => {
+  // The row the keys land on when they come back to the list: the one they were on, or the list's top.
+  const seatRow = () => {
     const row = heldRow() ?? rows()[0];
     if (row) occupy(row);
   };
+  // The diff hands the keys back to the list. One the toolbar hid slides out over the board the way the pointer brings
+  // it, and its row is seated once the page has drawn that slide; choosing a file takes the slide away again.
+  const leaveDiff = () => {
+    if (!railShown && !railPeek) return setRailPeek(true);
+    seatRow();
+  };
+  useEffect(() => { if (railPeek) seatRow(); }, [railPeek]);
   // The file the toolbar opens and `<leader>gf` opens: the click a view of its own then shows, at the caret it shows it at.
   const openFile = () => {
     if (!overview || !comparison || comparison.status === 'D') return;
@@ -533,15 +544,16 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     [context, terminal, overview, comparison]);
   // The keys go to the pane the press names: the rail hands them to the diff, and the diff hands them back.
   // A hidden sidebar draws nothing to hand the keys to, so a press there asks the window for it again; the window then
-  // focuses the tab and sends `wangcai:shown`, which is what seats the keys on a rail row.
+  // focuses the tab and sends `wangcai:shown`, which is what seats the keys on a rail row. The press reads the two
+  // states the list is drawn by, so a press after a toggle sees them as they now are.
   useEffect(() => {
     const backToRail = context.global.subscribe('git:focus-rail', () => {
       if (!shown()) return void context.global.publish(showView.event, showView.data);
       leaveDiff();
     });
-    const intoDiff = context.global.subscribe('git:focus-diff', () => { if (shown()) keys.current.enter?.(); });
+    const intoDiff = context.global.subscribe('git:focus-diff', () => { if (!shown()) return; setRailPeek(false); keys.current.enter?.(); });
     return () => { backToRail(); intoDiff(); };
-  }, [context]);
+  }, [context, railShown, railPeek]);
   // The rail answers the keys the way a vim list does. The diff and the width handle read their own keys, so a press made
   // in either is not a press for the rail.
   useEffect(() => {
@@ -574,7 +586,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
       <span className="git-branch" title={overview?.upstream}>{overview?.branch}
         {overview?.ahead ? <b> ↑{overview.ahead}</b> : null}{overview?.behind ? <i> ↓{overview.behind}</i> : null}</span>
       <span className="git-spacer" />
-      <button className="git-icon" aria-label="切换 Git 列表" aria-pressed={railShown} onClick={() => setRailShown(!railShown)}>
+      <button className="git-icon" aria-label="切换 Git 列表" aria-pressed={railShown} onClick={() => { setRailPeek(false); setRailShown(!railShown); }}>
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11zM6 3.5v9"/></svg>
       </button>
       <button className="git-icon" aria-label={`阅读方式 ${readings[reading]}`} title={`阅读方式：${readings[reading]}（点击切换）`}
@@ -603,7 +615,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
       </button>
     </header>
     {error ? <div className="git-note" role="alert">{error}</div> : !overview ? <div className="git-note">正在读取 Git…</div>
-      : <div className="git-body" ref={body} data-rail={railShown ? 'shown' : 'hidden'} style={{ '--rail-width': `${railWidth}px` } as CSSProperties}>
+      : <div className="git-body" ref={body} data-rail={railShown ? 'shown' : 'hidden'} data-peek={railPeek ? '' : undefined} style={{ '--rail-width': `${railWidth}px` } as CSSProperties}>
         <div className="git-rail-wrap">
           <nav className="git-rail" aria-label="Git 改动与历史" onScroll={endReached} onWheel={endReached}
             onClick={(event) => {

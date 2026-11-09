@@ -707,3 +707,18 @@ test('Ctrl+Shift+h brings a hidden sidebar back, and the rail takes the keys it 
     assert.equal(await hidden(), false, 'a hidden sidebar has no rail to hold the keys, so the press must have shown it again');
     assert.equal(await heldKey(page), 'change:unstaged:reveal.ts', 'the press seats the keys on the row the rail left them on');
   }));
+
+test('Ctrl+Shift+h slides a hidden list out for a choice, and the file it opens slides it back', { timeout: caseTimeout }, () => withGitApp('wangcai-git-peek',
+  gitLists,
+  async ({ home, env, page }) => {
+    await readLongChange(page, home, env, 'peek.ts');
+    await page.getByRole('button', { name: '切换 Git 列表' }).click();
+    assert.equal(await gitRail(page).isVisible(), false, 'the toolbar toggle hides the list');
+    await toRail(page);
+    assert.equal(await gitRail(page).isVisible(), true, 'the press slides the list out the way the pointer does');
+    await page.keyboard.press('j');
+    assert.equal(await heldKey(page), 'change:unstaged:peek.ts', 'the keys walk the list the press slid out');
+    await page.keyboard.press('l');
+    await until(() => inDiff(page));
+    assert.equal(await gitRail(page).isVisible(), false, 'the file the keys chose slides the list away again');
+  }));

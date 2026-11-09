@@ -21,15 +21,16 @@
 .git-rail { scrollbar-width: thin; scrollbar-color: transparent transparent; }
 .git-rail:hover { scrollbar-color: color-mix(in srgb, var(--wc-foreground) 20%, transparent) transparent; }
 .git-body[data-rail=hidden] .git-rail-wrap { position: absolute; top: 0; bottom: 0; left: 0; width: 12px; z-index: 3; }
-.git-body[data-rail=hidden] .git-rail-wrap:hover { width: calc(var(--rail-width) + var(--divider-width)); }
+/* The keys bring a hidden list out the same way the pointer does, and the file they choose puts it back. */
+.git-body[data-rail=hidden] .git-rail-wrap:hover, .git-body[data-rail=hidden][data-peek] .git-rail-wrap { width: calc(var(--rail-width) + var(--divider-width)); }
 .git-body[data-rail=hidden] .git-rail { display: none; position: absolute; top: 0; bottom: 0; left: 0; width: var(--rail-width); background: var(--wc-surface); border-right: 1px solid var(--wc-border); box-shadow: 0 0 28px #0009; }
-.git-body[data-rail=hidden] .git-rail-wrap:hover .git-rail { display: flex; }
+.git-body[data-rail=hidden] .git-rail-wrap:hover .git-rail, .git-body[data-rail=hidden][data-peek] .git-rail { display: flex; }
 .git-divider { flex: 0 0 var(--divider-width); display: flex; justify-content: center; cursor: col-resize; touch-action: none; }
 .git-divider::before { content: ''; align-self: stretch; width: 2px; margin: 12px 0; border-radius: 2px; }
 .git-divider:hover::before, .git-divider:focus-visible::before { background: var(--wc-accent); }
 .git-divider:focus-visible { outline: none; }
 .git-body[data-rail=hidden] .git-divider { display: none; position: absolute; top: 0; bottom: 0; left: var(--rail-width); }
-.git-body[data-rail=hidden] .git-rail-wrap:hover .git-divider { display: flex; }
+.git-body[data-rail=hidden] .git-rail-wrap:hover .git-divider, .git-body[data-rail=hidden][data-peek] .git-divider { display: flex; }
 .git-body[data-rail=hidden] .git-board { padding-left: 8px; }
 .git-gap { flex: none; height: 1px; margin: 8px 10px; background: var(--wc-border); }
 .git-page summary { display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 10px; cursor: pointer; }
