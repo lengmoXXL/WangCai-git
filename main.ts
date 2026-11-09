@@ -4,7 +4,7 @@ import { readDiff, readFiles, readHistory, readOverview, type RunGit } from './g
 import type { DiffRequest, FilesRequest, HistoryRequest, OverviewRequest, WatchRequest } from './shared';
 
 export const keys = {
-  '<leader>g': { global: true, insert: true, desc: '打开 Git 视图', event: 'core:show-view', data: { plugin: 'git' } },
+  '<leader>gg': { global: true, insert: true, desc: '打开 Git 视图', event: 'core:show-view', data: { plugin: 'git' } },
   '<leader>gf': { insert: true, desc: '打开文件', event: 'git:open-file' },
   // The page's own Ctrl+h and Ctrl+l, which the core's global bindings would otherwise take for the workspace list and
   // the page: a local binding answers before the global one inside this page.
