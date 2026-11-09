@@ -137,41 +137,65 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
       const here = now();
       side.setPosition({ lineNumber: here.lineNumber, column: Math.min(model.getLineMaxColumn(here.lineNumber), Math.max(1, value)) });
     };
-    const lineDown = () => go(now().lineNumber + 1);
-    const lineUp = () => go(now().lineNumber - 1);
-    const caretLeft = () => column(now().column - 1);
-    const caretRight = () => column(now().column + 1);
+    // A count typed before a key makes that key's motion run that many times, as vim reads one, and the press that reads
+    // it spends it: a count only ever reaches the key it was typed for.
+    let typed = 0;
+    const counted = (run: (times: number) => void) => () => { const times = typed || 1; typed = 0; run(times); };
+    const digit = (value: number) => { typed = typed * 10 + value; };
+    // A key that takes no count spends one all the same, so digits left waiting do not walk the key after them.
+    const plain = (run: () => void) => counted(() => run());
     const lineStart = () => column(1);
     const lineEnd = () => column(model.getLineMaxColumn(now().lineNumber));
     // The keys a vim reader reaches for in a read-only diff, kept beside Monaco's own, which keeps every binding this does
     // not read.
     // The keys are bound to the host because that is what a press made inside the shadow tree is retargeted to.
-    const unbind = bindKeys(element.current!, [
-      { keys: '<C-d>', run: () => scroll(Math.round(screenful() / 2)) },
-      { keys: '<C-u>', run: () => scroll(-Math.round(screenful() / 2)) },
-      { keys: '<C-f>', run: () => scroll(screenful()) },
-      { keys: '<C-b>', run: () => scroll(-screenful()) },
-      { keys: 'j', run: lineDown },
-      { keys: '<Down>', run: lineDown },
-      { keys: 'k', run: lineUp },
-      { keys: '<Up>', run: lineUp },
-      { keys: 'h', run: caretLeft },
-      { keys: '<Left>', run: caretLeft },
-      { keys: 'l', run: caretRight },
-      { keys: '<Right>', run: caretRight },
-      { keys: '0', run: lineStart },
-      { keys: '<Home>', run: lineStart },
-      { keys: '$', run: lineEnd },
-      { keys: '<End>', run: lineEnd },
-      { keys: 'G', run: () => go(model.getLineCount()) },
-      { keys: 'gg', run: () => go(1) },
-      // vim's own ]c and [c walk a change at a time.
-      { keys: ']c', run: () => jumps.current?.next() },
-      { keys: '[c', run: () => jumps.current?.previous() },
+    const host = element.current!;
+    const down = counted(times => go(now().lineNumber + times));
+    const up = counted(times => go(now().lineNumber - times));
+    const left = plain(() => column(now().column - 1));
+    const right = plain(() => column(now().column + 1));
+    // vim's own ]c and [c walk one change, or as many as a count asks for.
+    const walk = (direction: 'next' | 'previous') => counted(times => {
+      for (let at = 0; at < times; at += 1) jumps.current?.[direction]();
+    });
+    const unbind = bindKeys(host, [
+      { keys: '<C-d>', run: plain(() => scroll(Math.round(screenful() / 2))) },
+      { keys: '<C-u>', run: plain(() => scroll(-Math.round(screenful() / 2))) },
+      { keys: '<C-f>', run: plain(() => scroll(screenful())) },
+      { keys: '<C-b>', run: plain(() => scroll(-screenful())) },
+      // The digits that make a count; `0` is one only once a count is under way, since alone it names the line's start.
+      ...'123456789'.split('').map((key) => ({ keys: key, run: () => digit(Number(key)) })),
+      { keys: '0', run: () => { if (typed) digit(0); else lineStart(); } },
+      { keys: 'j', run: down },
+      { keys: '<Down>', run: down },
+      { keys: 'k', run: up },
+      { keys: '<Up>', run: up },
+      { keys: 'h', run: left },
+      { keys: '<Left>', run: left },
+      { keys: 'l', run: right },
+      { keys: '<Right>', run: right },
+      { keys: '<Home>', run: plain(lineStart) },
+      { keys: '$', run: plain(lineEnd) },
+      { keys: '<End>', run: plain(lineEnd) },
+      { keys: 'G', run: plain(() => go(model.getLineCount())) },
+      { keys: 'gg', run: plain(() => go(1)) },
+      { keys: ']c', run: walk('next') },
+      { keys: '[c', run: walk('previous') },
     ], { fields: 'all' });
+    // A key held down repeats, and the table drops every repeat so that a prefix like `gg` is not entered twice by one
+    // hold; the two line motions read their own repeats here, which is what keeps the caret walking while j or k is down.
+    const motions: Record<string, () => void> = { j: down, k: up };
+    const held = (event: KeyboardEvent) => {
+      if (!event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+      const motion = motions[event.key];
+      if (!motion) return;
+      event.preventDefault();
+      motion();
+    };
+    host.addEventListener('keydown', held, true);
     keys.current.enter = () => side.focus();
     editor.current = view;
-    return () => { keys.current.enter = undefined; jumps.current = undefined; unbind(); updated.dispose(); moved.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
+    return () => { keys.current.enter = undefined; jumps.current = undefined; host.removeEventListener('keydown', held, true); unbind(); updated.dispose(); moved.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
   }, [path]);
   // A read of the file the pane already shows rewrites the two sides where they stand: only the lines that changed
   // redraw, and the caret and the scroll it was left at survive unless that scroll no longer shows the caret.

@@ -144,6 +144,12 @@ const inDiff = (page) => page.evaluate(([host, side]) => {
   return Boolean(active && active.closest(side));
 }, [diffHost, diffSide]);
 
+// A key held down repeats, which the window's key table drops so that one hold cannot enter a prefix twice; the diff reads
+// those presses itself, so a hold is played here as the repeat the browser sends.
+const hold = (page, key) => page.evaluate(([host, key]) => {
+  document.querySelector(host).dispatchEvent(new KeyboardEvent('keydown', { key, repeat: true, bubbles: true }));
+}, [diffHost, key]);
+
 // Ctrl+h is answered in the main process, so the press that follows waits for the keys to land back in the rail.
 const toRail = async (page) => {
   await page.keyboard.press('Control+h');
@@ -546,6 +552,11 @@ test('The diff steps through its changes with ]c, [c and the toolbar buttons', {
     // The previous change wraps the other way, from the first change to the last.
     await page.keyboard.type('[c');
     await until(() => diffShowsLine(page, "const b = 'TWO';"));
+    // A count walks that many changes at once, the last change wrapping round to the first.
+    await page.keyboard.type('3]c');
+    await until(() => diffShowsLine(page, "const a = 'TWO';"));
+    await page.keyboard.type('3[c');
+    await until(() => diffShowsLine(page, "const b = 'TWO';"));
     // The toolbar buttons ask for the same jumps the keys ask for.
     await next.click();
     await until(() => diffShowsLine(page, "const a = 'TWO';"));
@@ -634,6 +645,18 @@ test('The rail answers hjkl, hands the keys to the diff, and the diff answers th
     await until(() => diffShowsLine(page, 'const line1 = 1 + 1;'));
     await page.keyboard.press('G');
     await until(() => diffShowsLine(page, 'const line200 = 200 + 1;'));
+    await page.keyboard.press('g');
+    await page.keyboard.press('g');
+    await until(() => diffShowsLine(page, 'const line1 = 1 + 1;'));
+    // A count typed before a motion walks that many lines, and a key held down walks on the repeats the table drops.
+    await page.keyboard.type('10j');
+    await until(() => diffShowsLine(page, 'const line11 = 11 + 1;'));
+    await page.keyboard.type('5k');
+    await until(() => diffShowsLine(page, 'const line6 = 6 + 1;'));
+    for (let step = 0; step < 5; step++) await hold(page, 'j');
+    await until(() => diffShowsLine(page, 'const line11 = 11 + 1;'));
+    for (let step = 0; step < 5; step++) await hold(page, 'k');
+    await until(() => diffShowsLine(page, 'const line6 = 6 + 1;'));
     await page.keyboard.press('g');
     await page.keyboard.press('g');
     await until(() => diffShowsLine(page, 'const line1 = 1 + 1;'));
