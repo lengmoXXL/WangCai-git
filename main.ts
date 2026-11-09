@@ -1,15 +1,16 @@
 import type { MachineConnection, WorkspaceActive } from '@lengmoxxl/sdk';
 import type { MainContext } from '@lengmoxxl/sdk/channel';
 import { readDiff, readFiles, readHistory, readOverview, type RunGit } from './git';
-import type { DiffRequest, FilesRequest, HistoryRequest, OverviewRequest, WatchRequest } from './shared';
+import { showView, type DiffRequest, type FilesRequest, type HistoryRequest, type OverviewRequest, type WatchRequest } from './shared';
 
 export const keys = {
-  '<leader>gg': { global: true, insert: true, desc: '打开 Git 视图', event: 'core:show-view', data: { plugin: 'git' } },
+  '<leader>gg': { global: true, insert: true, desc: '打开 Git 视图', ...showView },
   '<leader>gf': { insert: true, desc: '打开文件', event: 'git:open-file' },
-  // The page's own Ctrl+h and Ctrl+l, which the core's global bindings would otherwise take for the workspace list and
-  // the page: a local binding answers before the global one inside this page.
-  '<C-h>': { insert: true, desc: '回到 Git 列表', event: 'git:focus-rail' },
-  '<C-l>': { insert: true, desc: '进入 diff', event: 'git:focus-diff' },
+  // The page's own Ctrl+Shift+h and Ctrl+Shift+l, since the core's Ctrl+h and Ctrl+l walk the window's panes instead.
+  // Returning to the list answers from anywhere, because the sidebar it returns to may be hidden: a press there asks
+  // the window to show it again before the rail takes the keys.
+  '<C-S-h>': { global: true, insert: true, desc: '回到 Git 列表', event: 'git:focus-rail' },
+  '<C-S-l>': { insert: true, desc: '进入 diff', event: 'git:focus-diff' },
 };
 
 // Which fields this plugin takes from init.ts, and the default each one falls back to.

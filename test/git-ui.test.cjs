@@ -150,9 +150,9 @@ const hold = (page, key) => page.evaluate(([host, key]) => {
   document.querySelector(host).dispatchEvent(new KeyboardEvent('keydown', { key, repeat: true, bubbles: true }));
 }, [diffHost, key]);
 
-// Ctrl+h is answered in the main process, so the press that follows waits for the keys to land back in the rail.
+// Ctrl+Shift+h is answered in the main process, so the press that follows waits for the keys to land back in the rail.
 const toRail = async (page) => {
-  await page.keyboard.press('Control+h');
+  await page.keyboard.press('Control+Shift+H');
   await until(() => gitRail(page).evaluate((rail) => rail.contains(document.activeElement)));
 };
 
@@ -630,8 +630,8 @@ test('The rail answers hjkl, hands the keys to the diff, and the diff answers th
     assert.match(await carets.getAttribute('class'), /\bcursor-block-style\b/, 'the diff holds its caret as a block, the way vim draws one');
     // The two panes hand the keys back and forth along the row they sit in, on the keys the page claims from the core.
     await toRail(page);
-    assert.equal(await heldKey(page), 'change:unstaged:keys.ts', 'Ctrl+h returns the keys to the row the rail left them on');
-    await page.keyboard.press('Control+l');
+    assert.equal(await heldKey(page), 'change:unstaged:keys.ts', 'Ctrl+Shift+h returns the keys to the row the rail left them on');
+    await page.keyboard.press('Control+Shift+L');
     await until(() => inDiff(page));
     // A press on the row whose diff the rail already shows hands the keys back to that same editor.
     await toRail(page);
@@ -687,4 +687,23 @@ test('The rail answers hjkl, hands the keys to the diff, and the diff answers th
     await commitFiles(page).first().waitFor();
     await page.keyboard.press('l');
     await commitFiles(page).first().waitFor({ state: 'detached' });
+  }));
+
+test('Ctrl+Shift+h brings a hidden sidebar back, and the rail takes the keys it was given', { timeout: caseTimeout }, () => withGitApp('wangcai-git-reveal',
+  gitLists,
+  async ({ home, env, page }) => {
+    await readLongChange(page, home, env, 'reveal.ts');
+    const sidebar = page.locator('.sidebar-right');
+    const hidden = () => sidebar.evaluate((element) => element.hidden);
+    // The keys open the file, which is what puts the diff in front of the rail the press below returns to.
+    await sectionFiles(page, '未暂存').filter({ hasText: 'reveal.ts' }).focus();
+    await page.keyboard.press('k');
+    await page.keyboard.press('j');
+    await page.keyboard.press('l');
+    await until(() => inDiff(page));
+    await page.getByRole('button', { name: '切换右侧栏' }).click();
+    assert.equal(await hidden(), true, 'the toggle hides the sidebar the Git tab sits in');
+    await toRail(page);
+    assert.equal(await hidden(), false, 'a hidden sidebar has no rail to hold the keys, so the press must have shown it again');
+    assert.equal(await heldKey(page), 'change:unstaged:reveal.ts', 'the press seats the keys on the row the rail left them on');
   }));

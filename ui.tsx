@@ -7,7 +7,7 @@ import 'monaco-editor/basic-languages/monaco.contribution.js';
 import type { FileClick, Theme, WorkspaceActive } from '@lengmoxxl/sdk';
 import type { TabRecord, UiContext } from '@lengmoxxl/sdk/channel';
 import { bindKeys, pressIn } from '@lengmoxxl/sdk/keys';
-import type { Commit, Comparison, Diff, Font, GitFile, History, Overview, Settings, Stage } from './shared';
+import { showView, type Commit, type Comparison, type Diff, type Font, type GitFile, type History, type Overview, type Settings, type Stage } from './shared';
 import './style.css';
 
 export const title = 'Git';
@@ -74,7 +74,7 @@ function editorTheme(theme: Theme): monaco.editor.IStandaloneThemeData {
 type Caret = { line: number; column: number };
 
 // How a press reaches the diff: a comparison the pane already shows hands the keys to the editor it holds, and any other
-// arrives as `take`, which the pane mounting for it spends. Both end in `enter`, which is what Ctrl+l calls.
+// arrives as `take`, which the pane mounting for it spends. Both end in `enter`, which is what Ctrl+Shift+l calls.
 type Keys = { take?: Comparison; enter?: () => void };
 type Jump = { next: () => void; previous: () => void };
 
@@ -532,8 +532,13 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   useEffect(() => context.global.subscribe('git:open-file', () => { if (shown()) openFile(); }),
     [context, terminal, overview, comparison]);
   // The keys go to the pane the press names: the rail hands them to the diff, and the diff hands them back.
+  // A hidden sidebar draws nothing to hand the keys to, so a press there asks the window for it again; the window then
+  // focuses the tab and sends `wangcai:shown`, which is what seats the keys on a rail row.
   useEffect(() => {
-    const backToRail = context.global.subscribe('git:focus-rail', () => { if (shown()) leaveDiff(); });
+    const backToRail = context.global.subscribe('git:focus-rail', () => {
+      if (!shown()) return void context.global.publish(showView.event, showView.data);
+      leaveDiff();
+    });
     const intoDiff = context.global.subscribe('git:focus-diff', () => { if (shown()) keys.current.enter?.(); });
     return () => { backToRail(); intoDiff(); };
   }, [context]);
@@ -544,7 +549,10 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     if (!panel) return;
     const down = () => step(1);
     const up = () => step(-1);
-    return bindKeys(panel, [
+    // The window hands this page its keys when its tab comes to the front, which a sidebar that was hidden needed a
+    // press to ask for; the rail row is where the page keeps them, as Ctrl+Shift+h does.
+    panel.addEventListener('wangcai:shown', leaveDiff);
+    const unbind = bindKeys(panel, [
       { keys: 'j', run: down },
       { keys: '<Down>', run: down },
       { keys: 'k', run: up },
@@ -559,6 +567,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     ], {
       ignore: (event) => pressIn(event, '.git-editor, .git-divider'),
     });
+    return () => { panel.removeEventListener('wangcai:shown', leaveDiff); unbind(); };
   });
   return <section className="git-page" aria-label="Git history" data-reading={reading}>
     <header className="git-toolbar">

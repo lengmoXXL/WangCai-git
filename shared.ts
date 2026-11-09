@@ -37,3 +37,6 @@ export interface WatchRequest {
   machine: WorkspaceActive['machine'];
   paths: string[];
 }
+// What asks the window to show this plugin's view: the key that opens it and the press that brings a hidden sidebar
+// back both name the topic and the plugin id init.ts lists.
+export const showView = { event: 'core:show-view', data: { plugin: 'git' } };
