@@ -36,8 +36,9 @@
 .git-page summary::before { content: '▾'; color: var(--wc-muted); font-size: 9px; }
 .git-page details:not([open]) summary::before { content: '▸'; }
 .git-page summary small { color: var(--wc-muted); font-variant-numeric: tabular-nums; }
-/* The row the rail's keys hold, which a click seats as well: the same ring the file view draws around its cursor. */
-.git-rail [data-row][data-cursor] { outline: 1px solid var(--wc-accent); outline-offset: -1px; }
+/* The row the rail's keys hold, which a click seats as well: the same ring the file view draws around its cursor.
+   The ring is the keys' place in the rail, so it goes with them when the focus does. */
+.git-rail:focus-within [data-row][data-cursor] { outline: 1px solid var(--wc-accent); outline-offset: -1px; }
 .git-file { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 22px; padding: 0 4px 0 24px; text-align: left; }
 .git-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-dir { color: var(--wc-muted); }
