@@ -1,15 +1,17 @@
 import type { MachineConnection, WorkspaceActive } from '@lengmoxxl/sdk';
 import type { MainContext } from '@lengmoxxl/sdk/channel';
 import { readDiff, readFiles, readHistory, readOverview, type RunGit } from './git';
-import { showView, type DiffRequest, type FilesRequest, type HistoryRequest, type OverviewRequest, type WatchRequest } from './shared';
+import type { DiffRequest, FilesRequest, HistoryRequest, OverviewRequest, WatchRequest } from './shared';
+
+// What asks the window for the view this plugin draws: the topic it answers, and the plugin id init.ts lists.
+const showView = { event: 'core:show-view', data: { plugin: 'git' } };
 
 export const keys = {
   '<leader>gg': { global: true, insert: true, desc: '打开 Git 视图', ...showView },
   '<leader>gf': { insert: true, desc: '打开文件', event: 'git:open-file' },
-  // The page's own Ctrl+Shift+h and Ctrl+Shift+l, since the core's Ctrl+h and Ctrl+l walk the window's panes instead.
-  // Returning to the list answers from anywhere, because the sidebar it returns to may be hidden: a press there asks
-  // the window to show it again before the rail takes the keys.
-  '<C-S-h>': { global: true, insert: true, desc: '回到 Git 列表', event: 'git:focus-rail' },
+  // The page's own Ctrl+Shift+h and Ctrl+Shift+l: the core's Ctrl+h and Ctrl+l walk the window's panes, so the page
+  // keeps this pair for itself and answers it only while it holds the keys.
+  '<C-S-h>': { insert: true, desc: '回到 Git 列表', event: 'git:focus-rail' },
   '<C-S-l>': { insert: true, desc: '进入 diff', event: 'git:focus-diff' },
 };
 

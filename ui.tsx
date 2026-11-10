@@ -7,7 +7,7 @@ import 'monaco-editor/basic-languages/monaco.contribution.js';
 import type { FileClick, Theme, WorkspaceActive } from '@lengmoxxl/sdk';
 import type { TabRecord, UiContext } from '@lengmoxxl/sdk/channel';
 import { bindKeys, pressIn } from '@lengmoxxl/sdk/keys';
-import { showView, type Commit, type Comparison, type Diff, type Font, type GitFile, type History, type Overview, type Settings, type Stage } from './shared';
+import type { Commit, Comparison, Diff, Font, GitFile, History, Overview, Settings, Stage } from './shared';
 import './style.css';
 
 export const title = 'Git';
@@ -542,15 +542,11 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   // and the one on show is the one that answers.
   useEffect(() => context.global.subscribe('git:open-file', () => { if (shown()) openFile(); }),
     [context, terminal, overview, comparison]);
-  // The keys go to the pane the press names: the rail hands them to the diff, and the diff hands them back.
-  // A hidden sidebar draws nothing to hand the keys to, so a press there asks the window for it again; the window then
-  // focuses the tab and sends `wangcai:shown`, which is what seats the keys on a rail row. The press reads the two
+  // The keys go to the pane the press names: the rail hands them to the diff, and the diff hands them back. A page that
+  // is not on show leaves the press alone, since the tabs of other workspaces hear it too; the press reads the two
   // states the list is drawn by, so a press after a toggle sees them as they now are.
   useEffect(() => {
-    const backToRail = context.global.subscribe('git:focus-rail', () => {
-      if (!shown()) return void context.global.publish(showView.event, showView.data);
-      leaveDiff();
-    });
+    const backToRail = context.global.subscribe('git:focus-rail', () => { if (shown()) leaveDiff(); });
     const intoDiff = context.global.subscribe('git:focus-diff', () => { if (!shown()) return; setRailPeek(false); keys.current.enter?.(); });
     return () => { backToRail(); intoDiff(); };
   }, [context, railShown, railPeek]);
@@ -561,8 +557,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     if (!panel) return;
     const down = () => step(1);
     const up = () => step(-1);
-    // The window hands this page its keys when its tab comes to the front, which a sidebar that was hidden needed a
-    // press to ask for; the rail row is where the page keeps them, as Ctrl+Shift+h does.
+    // The window hands this page its keys when its tab comes to the front, and the rail row is where the page keeps them.
     panel.addEventListener('wangcai:shown', leaveDiff);
     const unbind = bindKeys(panel, [
       { keys: 'j', run: down },
