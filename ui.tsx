@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, RefObject, UIEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as monaco from 'monaco-editor/editor/editor.api.js';
@@ -17,6 +17,22 @@ const stages: Record<Stage, string> = { conflicted: '冲突', staged: '已暂存
 const readingOrder = ['auto', 'split', 'inline'] as const;
 type Reading = typeof readingOrder[number];
 const readings: Record<Reading, string> = { auto: '自动', split: '双栏', inline: '单栏' };
+// The page's layout is a habit of the reader rather than of a repository, so one store holds it for every workspace: a
+// width, a reading mode or a folded section changed in one Git tab is drawn by the others as well, and outlives them.
+type PageLayout = { reading: Reading; wrap: boolean; railShown: boolean; railWidth: number; folded: Stage[] };
+const layoutDefaults: PageLayout = { reading: 'auto', wrap: true, railShown: true, railWidth: 260, folded: [] };
+const layoutKey = 'git-layout';
+const layoutListeners = new Set<() => void>();
+let layoutHeld: PageLayout | undefined;
+const readLayout = (): PageLayout => layoutHeld ??= (() => {
+  try { return { ...layoutDefaults, ...JSON.parse(localStorage.getItem(layoutKey) ?? '{}') }; } catch { return layoutDefaults; }
+})();
+const writeLayout = (patch: Partial<PageLayout>) => {
+  layoutHeld = { ...readLayout(), ...patch };
+  localStorage.setItem(layoutKey, JSON.stringify(layoutHeld));
+  for (const listener of layoutListeners) listener();
+};
+const watchLayout = (listener: () => void) => { layoutListeners.add(listener); return () => { layoutListeners.delete(listener); }; };
 
 // A rail row is named by the key the cursor holds: the kind of row, then whatever names it.
 const rowKey = {
@@ -358,17 +374,12 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   const [loading, setLoading] = useState(false);
   const [opened, setOpened] = useState<string | null>(null);
   const [comparison, setComparison] = useState<Comparison>();
-  const [reading, setReading] = useState<Reading>('auto');
-  const [wrap, setWrap] = useState(true);
-  const [railShown, setRailShown] = useState(true);
+  const { reading, wrap, railShown, railWidth, folded } = useSyncExternalStore(watchLayout, readLayout);
   // Whether the keys slid the hidden list out, as the pointer does: the slide goes away with the file it chose.
   const [railPeek, setRailPeek] = useState(false);
-  const [railWidth, setRailWidth] = useState(260);
   const [menu, setMenu] = useState<{ x: number; y: number }>();
   // The row the rail's keys hold, named by the row's own key, so a read that redraws the list leaves it on that row.
   const [cursor, setCursor] = useState('');
-  // The sections a reader folded, by key or by click; a commit keeps its own fold in `opened`.
-  const [folded, setFolded] = useState<Stage[]>([]);
   const body = useRef<HTMLDivElement>(null);
   const drag = useRef<{ origin: number; width: number }>(undefined);
   const caret = useRef<Caret>(undefined);
@@ -472,7 +483,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   };
   const foldTo = (details: HTMLDetailsElement, closed: boolean) => {
     const stage = details.dataset.stage as Stage;
-    setFolded((current) => closed ? (current.includes(stage) ? current : [...current, stage]) : current.filter((one) => one !== stage));
+    writeLayout({ folded: closed ? (folded.includes(stage) ? folded : [...folded, stage]) : folded.filter((one) => one !== stage) });
   };
   // Choosing a file from the rail: the pane it opens, and the keys the choice hands over.
   // A file chosen out of the keys' own slide closes it, so the diff shows the board the reader left.
@@ -581,16 +592,16 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
       <span className="git-branch" title={overview?.upstream}>{overview?.branch}
         {overview?.ahead ? <b> ↑{overview.ahead}</b> : null}{overview?.behind ? <i> ↓{overview.behind}</i> : null}</span>
       <span className="git-spacer" />
-      <button className="git-icon" aria-label="切换 Git 列表" aria-pressed={railShown} onClick={() => { setRailPeek(false); setRailShown(!railShown); }}>
+      <button className="git-icon" aria-label="切换 Git 列表" aria-pressed={railShown} onClick={() => { setRailPeek(false); writeLayout({ railShown: !railShown }); }}>
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11zM6 3.5v9"/></svg>
       </button>
       <button className="git-icon" aria-label={`阅读方式 ${readings[reading]}`} title={`阅读方式：${readings[reading]}（点击切换）`}
-        onClick={() => setReading(readingOrder[(readingOrder.indexOf(reading) + 1) % readingOrder.length])}>
+        onClick={() => writeLayout({ reading: readingOrder[(readingOrder.indexOf(reading) + 1) % readingOrder.length] })}>
         <svg className="git-icon-auto" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11z"/><path d="M8 3.5v9" strokeDasharray="2 2"/></svg>
         <svg className="git-icon-split" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11zM8 3.5v9"/></svg>
         <svg className="git-icon-inline" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11zM4.5 6.5h7M4.5 9.5h4"/></svg>
       </button>
-      <button className="git-icon" aria-label="长行折行" aria-pressed={wrap} onClick={() => setWrap(!wrap)}>
+      <button className="git-icon" aria-label="长行折行" aria-pressed={wrap} onClick={() => writeLayout({ wrap: !wrap })}>
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h8a2 2 0 1 1 0 4H8M2.5 12h3"/><path d="M9.4 10.6 8 12l1.4 1.4"/></svg>
       </button>
       <button className="git-icon" aria-label="打开文件" title={comparison?.status === 'D' ? '文件已删除' : '打开文件（工作区版本）'}
@@ -638,9 +649,9 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
           <div className="git-divider" role="separator" aria-orientation="vertical" aria-label="调整 Git 列表宽度" tabIndex={0}
             aria-valuenow={railWidth} aria-valuemin={railMinimum} aria-valuemax={railMaximum}
             onPointerDown={(event) => { event.preventDefault(); drag.current = { origin: event.clientX, width: railWidth }; event.currentTarget.setPointerCapture(event.pointerId); }}
-            onPointerMove={(event) => { if (drag.current && event.currentTarget.hasPointerCapture(event.pointerId)) setRailWidth(clampWidth(drag.current.width + event.clientX - drag.current.origin)); }}
+            onPointerMove={(event) => { if (drag.current && event.currentTarget.hasPointerCapture(event.pointerId)) writeLayout({ railWidth: clampWidth(drag.current.width + event.clientX - drag.current.origin) }); }}
             onPointerUp={(event) => { drag.current = undefined; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
-            onKeyDown={(event) => { if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return; event.preventDefault(); setRailWidth(clampWidth(railWidth + (event.key === 'ArrowRight' ? 20 : -20))); }} />
+            onKeyDown={(event) => { if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return; event.preventDefault(); writeLayout({ railWidth: clampWidth(railWidth + (event.key === 'ArrowRight' ? 20 : -20)) }); }} />
         </div>
         <div className="git-board">
           {comparison ? <section className="git-pane" aria-label={`Diff ${comparison.path}`}

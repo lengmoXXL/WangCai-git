@@ -709,3 +709,30 @@ test('Ctrl+Shift+h slides a hidden list out for a choice, and the file it opens 
     assert.equal(await gitRail(page).isVisible(), true, 'the press slides the list out for a diff that held the keys');
     assert.equal(await heldKey(page), 'change:unstaged:peek.ts', 'and lands on the row the keys were last on');
   }));
+test('A Git tab that opens again draws the layout the last one was left at', { timeout: caseTimeout }, () => withGitApp('wangcai-git-layout',
+  gitLists,
+  async ({ home, env, page }) => {
+    const { repo, git } = repoIn(home, env, 'layout');
+    writeFileSync(join(repo, 'note.txt'), 'one\n');
+    git('add', '.'); git('commit', '-qm', 'initial commit');
+    writeFileSync(join(repo, 'note.txt'), 'two\n');
+    await readRepo(page, repo, 'layout');
+    await page.getByRole('button', { name: /^阅读方式/ }).click();
+    await page.getByRole('button', { name: '长行折行' }).click();
+    const divider = page.locator('.git-divider');
+    await divider.focus();
+    await page.keyboard.press('ArrowRight');
+    await gitRail(page).locator('summary', { hasText: '未暂存' }).click();
+    const railWidth = () => gitRail(page).evaluate((rail) => Math.round(rail.getBoundingClientRect().width));
+    assert.equal(await railWidth(), 280, 'the divider steps the list 20px wider');
+    // The layout is written for the window rather than for the tab that changed it, so the tab that opens next reads it.
+    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('git-layout'))),
+      { reading: 'split', wrap: false, railShown: true, railWidth: 280, folded: ['unstaged'] });
+    await page.locator('.sidebar-tab:has([aria-selected=true]) .close-tab').click();
+    await openView(page, 'Git');
+    await mainBranch(page).waitFor();
+    assert.equal(await readingPage(page, 'split').count(), 1, 'the reading mode is the one the last tab was left at');
+    assert.equal(await page.getByRole('button', { name: '长行折行' }).getAttribute('aria-pressed'), 'false', 'so is the wrap');
+    assert.equal(await railWidth(), 280, 'and the width');
+    assert.equal(await gitRail(page).locator('details[data-stage=unstaged]').evaluate((details) => details.open), false, 'the section folded before stays folded');
+  }));
