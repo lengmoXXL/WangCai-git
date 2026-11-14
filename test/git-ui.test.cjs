@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const { mkdirSync, writeFileSync, statSync, copyFileSync, utimesSync, renameSync, rmSync } = require('node:fs');
 const { join, resolve } = require('node:path');
-const { until, withWindow } = require('@lengmoxxl/wangcai-testkit');
+const { until, withHome } = require('@lengmoxxl/wangcai-testkit');
 
 // What a case does to the window's own chrome.
 //
@@ -162,12 +162,15 @@ const gitLists = { workspaces: ['terminal-agent'], tabs: [gitTab] };
 const gitListsNoAutoRefresh = { workspaces: ['terminal-agent'], tabs: [{ ...gitTab, config: { autoRefresh: false } }] };
 
 // One case with the Git view open, a local workspace it follows, and no error on the page by the end.
-const withGitApp = (prefix, lists, body) => withWindow(prefix, lists, async (context) => {
-  const { page, errors } = context;
+const withGitApp = (prefix, lists, body) => withHome(prefix, lists, async ({ home, env, open }) => {
+  const { desktop, page } = await open();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   await openView(page, 'Git');
   await noTerminal(page).waitFor();
   await createWorkspace(page);
-  await body(context);
+  await body({ home, env, page, errors, desktop });
   assert.deepEqual(errors, []);
 });
 
@@ -735,4 +738,39 @@ test('A Git tab that opens again draws the layout the last one was left at', { t
     assert.equal(await page.getByRole('button', { name: '长行折行' }).getAttribute('aria-pressed'), 'false', 'so is the wrap');
     assert.equal(await railWidth(), 280, 'and the width');
     assert.equal(await gitRail(page).locator('details[data-stage=unstaged]').evaluate((details) => details.open), false, 'the section folded before stays folded');
+  }));
+// Auto reading falls back to the inline view while the pane is narrow, and Monaco leaves the original's wrap off once
+// the pane widens again; both sides must wrap alike whenever the diff draws side by side.
+test('A diff widened out of the inline view wraps both sides alike', { timeout: caseTimeout }, () => withGitApp('wangcai-git-wrap',
+  gitLists,
+  async ({ home, env, page, desktop }) => {
+    const window = await desktop.browserWindow(page);
+    await window.evaluate((win) => win.setBounds({ width: 1600, height: 900 }));
+    const { repo, git } = repoIn(home, env, 'wrap');
+    const long = `const value = '${'x'.repeat(300)}';\n`;
+    writeFileSync(join(repo, 'long.txt'), long);
+    git('add', '.'); git('commit', '-qm', 'initial commit');
+    writeFileSync(join(repo, 'long.txt'), long.replace('x'.repeat(300), 'y'.repeat(300)));
+    await readRepo(page, repo, 'wrap');
+    await sectionFiles(page, '未暂存').first().click();
+    await diffEditor(page).waitFor();
+    await page.getByRole('button', { name: '切换 Git 列表' }).click();
+    // The right sidebar's divider steps 20px per arrow press; 25 steps carry the pane past the 900px breakpoint where
+    // auto reading draws side by side, and back under it.
+    const divider = page.locator('.sidebar-divider.divider-right');
+    await divider.focus();
+    const step = async (key, times) => { for (let i = 0; i < times; i += 1) await page.keyboard.press(key); };
+    const lineCounts = () => page.evaluate(([host, original, modified, eachLine]) => {
+      const root = document.querySelector(host).shadowRoot;
+      return [original, modified].map((side) => root.querySelector(side).querySelectorAll(eachLine).length);
+    }, [diffHost, diffOriginal, diffSide, eachLine]);
+    const wrapsAlike = async () => { const [left, right] = await lineCounts(); return right > 1 && left === right; };
+    await step('ArrowLeft', 25);
+    await diffEditor(page, '.side-by-side').waitFor();
+    await until(wrapsAlike);
+    await step('ArrowRight', 25);
+    await diffEditor(page, ':not(.side-by-side)').waitFor();
+    await step('ArrowLeft', 25);
+    await diffEditor(page, '.side-by-side').waitFor();
+    await until(wrapsAlike);
   }));

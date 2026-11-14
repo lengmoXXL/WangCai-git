@@ -126,7 +126,14 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
     const original = monaco.editor.createModel(diff.oldText, language);
     const modified = monaco.editor.createModel(diff.newText, language);
     view.setModel({ original, modified });
-    view.getOriginalEditor().updateOptions({ glyphMargin: false });
+    const leftSide = view.getOriginalEditor();
+    leftSide.updateOptions({ glyphMargin: false });
+    // Monaco turns the original's wrap off (wordWrapOverride2) while a narrow pane shows the inline view and never
+    // restores it when the pane widens, leaving the left unwrapped beside a wrapped right. Clear the override whenever
+    // the diff pushes options so both sides read the same wordWrap.
+    const unwrapped = leftSide.onDidChangeConfiguration(() => {
+      if (leftSide.getOption(monaco.editor.EditorOption.wordWrapOverride2) !== 'inherit') leftSide.updateOptions({ wordWrapOverride2: 'inherit' });
+    });
     jumps.current = { next: () => view.goToDiff('next'), previous: () => view.goToDiff('previous') };
     // A pane that is set and never edited computes its diff then and there, so the blocks are counted once here as well.
     const count = () => changes(view.getLineChanges()?.length ?? 0);
@@ -211,7 +218,7 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
     host.addEventListener('keydown', held, true);
     keys.current.enter = () => side.focus();
     editor.current = view;
-    return () => { keys.current.enter = undefined; jumps.current = undefined; host.removeEventListener('keydown', held, true); unbind(); updated.dispose(); moved.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
+    return () => { keys.current.enter = undefined; jumps.current = undefined; host.removeEventListener('keydown', held, true); unbind(); updated.dispose(); moved.dispose(); unwrapped.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
   }, [path]);
   // A read of the file the pane already shows rewrites the two sides where they stand: only the lines that changed
   // redraw, and the caret and the scroll it was left at survive unless that scroll no longer shows the caret.
