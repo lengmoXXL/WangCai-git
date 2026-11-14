@@ -26,11 +26,13 @@ export interface Overview extends History {
   truncated: boolean;
 }
 export type Comparison = GitFile & ({ source: Stage } | { source: 'commit'; rev: string })
-export interface Diff { oldText: string; newText: string; notice?: string }
+// tooLarge is the largest side's byte size when it passes the diff limit: the pane offers to load it anyway.
+export interface Diff { oldText: string; newText: string; notice?: string; tooLarge?: number }
 export interface OverviewRequest { terminal: WorkspaceActive }
 export interface HistoryRequest { terminal: WorkspaceActive; root: string; head: string; skip: number }
 export interface FilesRequest { terminal: WorkspaceActive; root: string; rev: string }
-export interface DiffRequest { terminal: WorkspaceActive; root: string; comparison: Comparison }
+// force loads a file past the diff limit, which the reader asked for after being told its size.
+export interface DiffRequest { terminal: WorkspaceActive; root: string; comparison: Comparison; force?: boolean }
 /** An empty path list gives up what that tab watched before. */
 export interface WatchRequest {
   holder: string;

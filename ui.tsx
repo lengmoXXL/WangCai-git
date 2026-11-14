@@ -280,15 +280,16 @@ function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, 
 }) {
   const [diff, setDiff] = useState<Diff>();
   const [error, setError] = useState('');
+  const forced = useRef(false);
   // The pane reads what it shows when it opens, and again when the sides it compares are not the ones it holds, or
   // where a truncated list cut its file off so that no read can name those sides, whenever the page applies a read.
   // Otherwise a change elsewhere in the repository leaves the pane as it is.
   const read = () => {
-    void context.ui.request<Diff>('diff', { terminal, root, comparison }).then(value => {
+    void context.ui.request<Diff>('diff', { terminal, root, comparison, force: forced.current }).then(value => {
       setError('');
       // A read that finds what the pane already holds leaves it as it is, so a poll of an unchanged file draws nothing.
       setDiff(previous => previous && previous.oldText === value.oldText && previous.newText === value.newText
-        && previous.notice === value.notice ? previous : value);
+        && previous.notice === value.notice && previous.tooLarge === value.tooLarge ? previous : value);
     }).catch((problem: Error) => setError(problem.message));
   };
   useEffect(read, [context, terminal, root, comparison, source]);
@@ -308,6 +309,12 @@ function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, 
   }, [keys, comparison, error, diff]);
   if (error) return <div className="git-note" role="alert">{error}</div>;
   if (!diff) return <div className="git-note">正在读取 diff…</div>;
+  if (diff.tooLarge !== undefined) return (
+    <div className="git-note">
+      <div>文件较大（{(diff.tooLarge / 1024 / 1024).toFixed(1)} MiB），加载可能卡顿。</div>
+      <button onClick={() => { forced.current = true; read(); }}>仍要加载</button>
+    </div>
+  );
   if (diff.notice) return <div className="git-note">{diff.notice}</div>;
   return <DiffEditor diff={diff} path={comparison.path} reading={reading} wrap={wrap} caret={caret} keys={keys} jumps={jumps} changes={changes} />;
 }

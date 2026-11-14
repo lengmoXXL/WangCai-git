@@ -433,6 +433,26 @@ test('A staged diff pane follows the index of the file it shows', { timeout: cas
     await modifiedLines(page).filter({ hasText: 'THREE' }).waitFor();
   }));
 
+test('A file past the diff limit asks before loading, and loads when the reader chooses', { timeout: caseTimeout }, () => withGitApp('wangcai-git-large',
+  gitLists,
+  async ({ home, env, page }) => {
+    const { repo, git } = repoIn(home, env, 'repo');
+    const file = join(repo, 'large.ts');
+    writeFileSync(file, 'const value = 1;\n');
+    git('add', 'large.ts'); git('commit', '-qm', 'initial commit');
+    // The staged side passes the 2 MiB limit: the pane must offer a choice, not fail.
+    writeFileSync(file, Array.from({ length: 30000 }, (_, i) => `const line${i} = ${'x'.repeat(60)};\n`).join(''));
+    git('add', 'large.ts');
+    await readRepo(page, repo, 'repo');
+    await sectionFiles(page, '已暂存').filter({ hasText: 'large.ts' }).click();
+    const note = page.locator('.git-note').filter({ hasText: '文件较大' });
+    await note.waitFor();
+    assert.equal(await page.locator('.git-note[role=alert]').count(), 0, 'a large file is a choice, not an error');
+    assert.equal(await diffEditor(page).count(), 0, 'the diff waits for the reader to choose');
+    await note.getByRole('button', { name: '仍要加载' }).click();
+    await diffEditor(page).waitFor();
+  }));
+
 test('A staged diff pane follows HEAD as well as the index', { timeout: caseTimeout }, () => withGitApp('wangcai-git-head',
   gitLists,
   async ({ home, env, page }) => {

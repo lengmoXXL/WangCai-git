@@ -64,4 +64,5 @@
 .git-menu button:hover { background: var(--wc-selection); }
 .git-note { padding: 12px; color: var(--wc-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .git-note[role=alert] { color: var(--wc-red); }
-.git-board > .git-note { align-self: flex-start; }
+.git-board > .git-note { align-self: flex-start; max-width: 100%; }
+.git-note button { display: block; margin-top: 8px; padding: 2px 12px; border: 1px solid var(--wc-border); border-radius: 4px; color: var(--wc-accent); }

@@ -78,12 +78,16 @@ export async function readFiles(request: FilesRequest, run: RunGit): Promise<Git
   return files;
 }
 
+// Both sides of a text diff are loaded whole and handed to the editor; past this size the pane asks before loading.
+const diffLimit = 2 * 1024 * 1024;
+
 export async function readDiff(request: DiffRequest, run: RunGit, readFile: (path: string) => Promise<Uint8Array>): Promise<Diff> {
   const git = gitOf(request.root, run);
   const comparison = request.comparison;
   for (const path of [comparison.path, comparison.oldPath ?? comparison.path]) {
     if (!path || path.includes('\0') || posix.isAbsolute(path) || path.split('/').includes('..')) throw new Error('Invalid repository path');
   }
+  let tooLarge = 0;
   const blob = async (tree: string | undefined, path: string, stage = '0'): Promise<Buffer> => {
     if (tree === '') return Buffer.alloc(0);
     const records = (await git(tree === undefined ? ['ls-files', '--stage', '-z', '--', path] : ['ls-tree', '-z', tree, '--', path])).toString().split('\0');
@@ -96,7 +100,7 @@ export async function readDiff(request: DiffRequest, run: RunGit, readFile: (pat
     if (mode === '160000') return Buffer.from(`Subproject commit ${tree === undefined ? typeOrHash : hashOrStage}\n`);
     const hash = tree === undefined ? typeOrHash : hashOrStage;
     const size = Number((await git(['cat-file', '-s', hash])).toString());
-    if (size > 2 * 1024 * 1024) throw new Error('File exceeds the 2 MiB diff limit');
+    if (size > diffLimit && !request.force) { tooLarge = Math.max(tooLarge, size); return Buffer.alloc(0); }
     return git(['cat-file', 'blob', hash]);
   };
   const oldPath = comparison.oldPath ?? comparison.path;
@@ -117,7 +121,8 @@ export async function readDiff(request: DiffRequest, run: RunGit, readFile: (pat
     newBytes = comparison.status === 'D' ? Buffer.alloc(0) : await readFile(posix.join(request.root, comparison.path));
   }
   const result: Diff = { oldText: '', newText: '' };
-  if (oldBytes.length > 2 * 1024 * 1024 || newBytes.length > 2 * 1024 * 1024) return { ...result, notice: 'File exceeds the 2 MiB diff limit' };
+  const largest = Math.max(tooLarge, oldBytes.length, newBytes.length);
+  if (largest > diffLimit && !request.force) return { ...result, tooLarge: largest };
   if (oldBytes.includes(0) || newBytes.includes(0)) return { ...result, notice: 'Binary files cannot be compared as text' };
   try {
     const decoder = new TextDecoder(undefined, { fatal: true });
