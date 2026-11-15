@@ -759,6 +759,37 @@ test('A Git tab that opens again draws the layout the last one was left at', { t
     assert.equal(await railWidth(), 280, 'and the width');
     assert.equal(await gitRail(page).locator('details[data-stage=unstaged]').evaluate((details) => details.open), false, 'the section folded before stays folded');
   }));
+// A page shown again hands the keys to the view that held them last: the diff keeps them across a click on its tab and
+// across the core's walk away and back, and the rail seats its row when it was the one holding them.
+test('A shown page returns the keys to the view that held them last', { timeout: caseTimeout }, () => withGitApp('wangcai-git-regain',
+  gitLists,
+  async ({ home, env, page }) => {
+    await readLongChange(page, home, env, 'regain.ts');
+    await railFiles(page).first().click();
+    await diffEditor(page).waitFor();
+    await page.keyboard.press('l');
+    await until(() => inDiff(page));
+    const tab = page.getByRole('tab', { name: 'Git' });
+    const inRail = () => gitRail(page).evaluate((rail) => rail.contains(document.activeElement));
+    const away = () => until(async () => !(await inDiff(page)) && !(await inRail()));
+    await tab.click();
+    await until(() => inDiff(page));
+    // The keymap matches strokes case-sensitively, so the walk is pressed as a real hand presses it, lowercase.
+    await page.keyboard.press('Control+h');
+    await away();
+    await page.keyboard.press('Control+l');
+    await until(() => inDiff(page));
+    await toRail(page);
+    const held = await heldKey(page);
+    await tab.click();
+    await until(inRail);
+    assert.equal(await heldKey(page), held, 'the rail seats the row it left the keys on');
+    await page.keyboard.press('Control+h');
+    await away();
+    await page.keyboard.press('Control+l');
+    await until(inRail);
+    assert.equal(await heldKey(page), held);
+  }));
 // Auto reading falls back to the inline view while the pane is narrow, and Monaco leaves the original's wrap off once
 // the pane widens again; both sides must wrap alike whenever the diff draws side by side.
 test('A diff widened out of the inline view wraps both sides alike', { timeout: caseTimeout }, () => withGitApp('wangcai-git-wrap',
@@ -777,7 +808,7 @@ test('A diff widened out of the inline view wraps both sides alike', { timeout: 
     await page.getByRole('button', { name: '切换 Git 列表' }).click();
     // The right sidebar's divider steps 20px per arrow press; 25 steps carry the pane past the 900px breakpoint where
     // auto reading draws side by side, and back under it.
-    const divider = page.locator('.sidebar-divider.divider-right');
+    const divider = page.getByRole('separator', { name: '调整右侧栏宽度' });
     await divider.focus();
     const step = async (key, times) => { for (let i = 0; i < times; i += 1) await page.keyboard.press(key); };
     const lineCounts = () => page.evaluate(([host, original, modified, eachLine]) => {

@@ -398,6 +398,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
   const drag = useRef<{ origin: number; width: number }>(undefined);
   const caret = useRef<Caret>(undefined);
   const keys = useRef<Keys>({});
+  const diffHeld = useRef(false);
   const jumps = useRef<Jump>(undefined);
   const [blocks, setBlocks] = useState(0);
   // Set while a press opens a file: it makes that choice the one the keys wait for, and it is what tells a press on the
@@ -582,8 +583,21 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     if (!panel) return;
     const down = () => step(1);
     const up = () => step(-1);
-    // The window hands this page its keys when its tab comes to the front, and the rail row is where the page keeps them.
-    panel.addEventListener('wangcai:shown', leaveDiff);
+    // The view the focus lands in is the one a shown page hands the keys back to; the diff's editor retargets its
+    // focus to its host across the shadow boundary, the rail's rows answer for themselves.
+    const held = (event: FocusEvent) => {
+      const target = event.target as HTMLElement;
+      if (target.closest('.git-editor')) diffHeld.current = true;
+      else if (target.closest('.git-rail')) diffHeld.current = false;
+    };
+    panel.addEventListener('focusin', held);
+    // The window hands this page its keys when its tab comes to the front, by the core's walk or a click on the tab;
+    // they return to the view that held them last, and to the rail when neither has.
+    const regain = () => {
+      if (diffHeld.current && keys.current.enter) { setRailPeek(false); keys.current.enter(); }
+      else leaveDiff();
+    };
+    panel.addEventListener('wangcai:shown', regain);
     const unbind = bindKeys(panel, [
       { keys: 'j', run: down },
       { keys: '<Down>', run: down },
@@ -599,7 +613,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     ], {
       ignore: (event) => pressIn(event, '.git-editor, .git-divider'),
     });
-    return () => { panel.removeEventListener('wangcai:shown', leaveDiff); unbind(); };
+    return () => { panel.removeEventListener('wangcai:shown', regain); panel.removeEventListener('focusin', held); unbind(); };
   });
   return <section className="git-page" aria-label="Git history" data-reading={reading}>
     <header className="git-toolbar">
