@@ -59,8 +59,23 @@ function editorTheme(theme: Theme): monaco.editor.IStandaloneThemeData {
       { token: 'type', foreground: hex(theme.cyan) },
       { token: 'function', foreground: hex(theme.blue) },
       { token: 'constant', foreground: hex(theme.brightMagenta) },
-      { token: 'delimiter', foreground: hex(theme.muted) },
+      { token: 'delimiter', foreground: hex(theme.foreground) },
       { token: 'regexp', foreground: hex(theme.red) },
+      // The language-specific tokens the editor's HighlightStyle reaches through lezer tags; left out, Monaco's inherited
+      // base theme paints them in its own palette. Monaco gives a CSS function name the same token as a value identifier,
+      // so var( takes the value hue here while the editor spells it as a keyword.
+      { token: 'attribute.name', foreground: hex(theme.foreground) },
+      { token: 'attribute.value', foreground: hex(theme.blue) },
+      { token: 'attribute.value.number', foreground: hex(theme.yellow) },
+      { token: 'attribute.value.unit', foreground: hex(theme.magenta) },
+      { token: 'attribute.value.hex', foreground: hex(theme.foreground) },
+      // The base theme carries language-suffixed rules, which sit deeper in the token trie and outrank the plain ones.
+      { token: 'attribute.value.number.css', foreground: hex(theme.yellow) },
+      { token: 'attribute.value.unit.css', foreground: hex(theme.magenta) },
+      { token: 'attribute.value.hex.css', foreground: hex(theme.foreground) },
+      { token: 'tag', foreground: hex(theme.cyan) },
+      { token: 'namespace', foreground: hex(theme.cyan) },
+      { token: 'variable', foreground: hex(theme.foreground) },
     ],
     colors: {
       'editor.background': theme.background,

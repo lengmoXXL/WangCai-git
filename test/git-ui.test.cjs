@@ -1,6 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
+const { isDeepStrictEqual } = require('node:util');
 const { mkdirSync, writeFileSync, statSync, copyFileSync, utimesSync, renameSync, rmSync } = require('node:fs');
 const { join, resolve } = require('node:path');
 const { until, withHome } = require('@lengmoxxl/wangcai-testkit');
@@ -59,6 +60,14 @@ const catchClicks = (page) => page.evaluate(() => {
 });
 const lastClick = (page) => page.evaluate(() => window.__clicks.at(-1));
 const clickCount = (page) => page.evaluate(() => window.__clicks.length);
+// A theme token as the shell wrote it and as the page paints it: the hex Monaco exposes, the rgb a computed colour reads
+// as, and the channels a tint of that token is spelled with.
+const themeHues = (page, names) => page.evaluate((list) => Object.fromEntries(list.map((name) => {
+  const hex = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const value = parseInt(hex.slice(1), 16);
+  const channels = `${value >> 16 & 255}, ${value >> 8 & 255}, ${value & 255}`;
+  return [name, { hex, rgb: `rgb(${channels})`, channels }];
+})), names);
 // The class names the rail and the page's notes carry, which more than one locator builds on.
 const gitFile = '.git-file';
 const gitNote = '.git-note';
@@ -266,7 +275,7 @@ test('A Git tab follows the terminal, opens files from every list, and shows one
     await page.mouse.up();
     assert.equal(Math.round(await railWidth()), Math.round(bodyBox.width * 0.7));
     await divider.hover();
-    assert.equal(await divider.evaluate((element) => getComputedStyle(element, '::before').backgroundColor), 'rgb(57, 148, 188)');
+    assert.equal(await divider.evaluate((element) => getComputedStyle(element, '::before').backgroundColor), (await themeHues(page, ['--wc-accent']))['--wc-accent'].rgb);
     const railToggle = page.getByRole('button', { name: '切换 Git 列表' });
     const railWrap = page.locator('.git-rail-wrap');
     const wrapWidth = () => railWrap.evaluate((element) => Math.round(element.getBoundingClientRect().width));
@@ -293,8 +302,9 @@ test('A Git tab follows the terminal, opens files from every list, and shows one
     assert.equal(await boardWidth(), boardWidthBefore);
     await railToggle.click();
     assert.equal(await bodyPane.getAttribute('data-rail'), 'shown');
-    assert.equal(await statusMark(page, 'A').first().evaluate((element) => getComputedStyle(element).color), 'rgb(155, 199, 188)', 'added shares the theme green with the diff tint');
-    assert.deepEqual(await page.locator(`${diffHost} ${monacoEditor}`).first().evaluate((element) => ['--vscode-editor-background', '--vscode-diffEditor-insertedTextBackground', '--vscode-diffEditor-removedTextBackground'].map((name) => getComputedStyle(element).getPropertyValue(name))), ['#121314', 'rgba(155, 199, 188, 0.2)', 'rgba(230, 140, 140, 0.2)']);
+    const { '--wc-green': green, '--wc-red': red, '--wc-background': background } = await themeHues(page, ['--wc-green', '--wc-red', '--wc-background']);
+    assert.equal(await statusMark(page, 'A').first().evaluate((element) => getComputedStyle(element).color), green.rgb, 'added shares the theme green with the diff tint');
+    assert.deepEqual(await page.locator(`${diffHost} ${monacoEditor}`).first().evaluate((element) => ['--vscode-editor-background', '--vscode-diffEditor-insertedTextBackground', '--vscode-diffEditor-removedTextBackground'].map((name) => getComputedStyle(element).getPropertyValue(name))), [background.hex, `rgba(${green.channels}, 0.2)`, `rgba(${red.channels}, 0.2)`]);
     const workerReady = page.waitForEvent('worker');
     await page.evaluate(() => window.MonacoEnvironment.getWorker('', 'editorWorkerService'));
     const worker = await workerReady;
@@ -824,4 +834,40 @@ test('A diff widened out of the inline view wraps both sides alike', { timeout: 
     await step('ArrowLeft', 25);
     await diffEditor(page, '.side-by-side').waitFor();
     await until(wrapsAlike);
+  }));
+
+test('A CSS diff reads the palette the editor reads', { timeout: caseTimeout }, () => withGitApp('wangcai-git-csspalette',
+  gitLists,
+  async ({ home, env, page, errors }) => {
+    const { repo, git } = repoIn(home, env, 'repo');
+    const css = join(repo, 'style.css');
+    const source = '/* note */\n.box { border-left: 1px solid red; }\n';
+    writeFileSync(css, source);
+    git('add', '.'); git('commit', '-qm', 'initial commit');
+    writeFileSync(css, source.replace('1px', '2px'));
+    await readRepo(page, repo, 'repo');
+    await sectionFiles(page, '未暂存').first().click();
+    await modifiedLines(page).filter({ hasText: 'border-left' }).waitFor();
+    const hues = await themeHues(page, ['--wc-cyan', '--wc-foreground', '--wc-yellow', '--wc-magenta', '--wc-blue', '--wc-muted']);
+    const expect = {
+      '.box': hues['--wc-cyan'].rgb,
+      'border-left': hues['--wc-foreground'].rgb,
+      '2': hues['--wc-yellow'].rgb,
+      px: hues['--wc-magenta'].rgb,
+      solid: hues['--wc-blue'].rgb,
+      red: hues['--wc-blue'].rgb,
+      '/* note */': hues['--wc-muted'].rgb,
+    };
+    // Monaco tokenizes after it draws, and until then a line is one class-less span wrapping the text: only a span carrying
+    // a token class has a hue of its own to read. Its spaces are non-breaking ones, so a key spelled with plain spaces is
+    // matched against text whose whitespace is normalised.
+    const readHues = () => page.evaluate(([host, side, line, keys]) => {
+      const spans = [...document.querySelector(host).shadowRoot.querySelectorAll(`${side} ${line} span`)].filter((span) => span.className);
+      return Object.fromEntries(keys.flatMap((key) => {
+        const span = spans.find((item) => item.textContent.replace(/\s+/g, ' ').includes(key));
+        return span ? [[key, getComputedStyle(span).color]] : [];
+      }));
+    }, [diffHost, diffSide, eachLine, Object.keys(expect)]);
+    await until(async () => isDeepStrictEqual(await readHues(), expect));
+    assert.deepEqual(errors, []);
   }));
