@@ -741,6 +741,9 @@ export async function mount(_container: HTMLElement, context: UiContext) {
   const profile: Settings = context.host.config;
   font = profile.font;
   monaco.editor.defineTheme('wangcai', editorTheme(profile.theme));
+  // Defining the theme the editors already carry is what repaints them: Monaco refreshes when the name it is handed is
+  // the one in use, so the diff keeps its models, its scroll and its folds through a switch.
+  const offTheme = context.global.subscribe<Theme>('theme', (next) => { monaco.editor.defineTheme('wangcai', editorTheme(next)); });
   const offActive = context.global.subscribe<WorkspaceActive | null>('workspace:active', (value) => { activeWorkspaceId = value?.workspaceId; });
   void context.global.publish('workspace:query', null);
   const response = await fetch(new URL('./ui.worker.js', import.meta.url));
@@ -756,6 +759,7 @@ export async function mount(_container: HTMLElement, context: UiContext) {
   self.MonacoEnvironment = environment;
   return () => {
     offActive();
+    offTheme();
     for (const worker of workers) worker.terminate();
     URL.revokeObjectURL(workerURL);
     if (self.MonacoEnvironment === environment) self.MonacoEnvironment = previous;

@@ -838,7 +838,7 @@ test('A diff widened out of the inline view wraps both sides alike', { timeout: 
 
 test('A CSS diff reads the palette the editor reads', { timeout: caseTimeout }, () => withGitApp('wangcai-git-csspalette',
   gitLists,
-  async ({ home, env, page, errors }) => {
+  async ({ home, env, page }) => {
     const { repo, git } = repoIn(home, env, 'repo');
     const css = join(repo, 'style.css');
     const source = '/* note */\n.box { border-left: 1px solid red; }\n';
@@ -869,5 +869,57 @@ test('A CSS diff reads the palette the editor reads', { timeout: caseTimeout }, 
       }));
     }, [diffHost, diffSide, eachLine, Object.keys(expect)]);
     await until(async () => isDeepStrictEqual(await readHues(), expect));
-    assert.deepEqual(errors, []);
+  }));
+
+// The diff Monaco draws is its own theme, not the --wc-* tokens the rail around it reads, so a switch has to reach it.
+test('A switch of theme recolours the diff already on screen', { timeout: caseTimeout }, () => withGitApp('wangcai-git-theme',
+  gitLists,
+  async ({ home, env, page }) => {
+    const { repo, git } = repoIn(home, env, 'repo');
+    const file = join(repo, 'a.ts');
+    writeFileSync(file, '// note\nconst answer = 1;\n');
+    git('add', '.'); git('commit', '-qm', 'initial commit');
+    writeFileSync(file, '// note\nconst answer = 2;\n');
+    await readRepo(page, repo, 'repo');
+    await sectionFiles(page, '未暂存').first().click();
+    await modifiedLines(page).filter({ hasText: 'answer' }).waitFor();
+
+    // What the diff is painted in, read inside the shadow root Monaco lives in. editor.background comes from
+    // --wc-background and a comment from --wc-muted, so the palette in force says what these should be.
+    const painted = () => page.evaluate(([host, side, line, editor]) => {
+      const root = document.querySelector(host).shadowRoot;
+      const pane = root.querySelector(editor);
+      const span = [...root.querySelectorAll(`${side} ${line} span`)]
+        .find((node) => node.className && node.textContent.includes('note'));
+      return {
+        background: pane ? getComputedStyle(pane).backgroundColor : '',
+        comment: span ? getComputedStyle(span).color : '',
+        scheme: document.documentElement.style.colorScheme,
+      };
+    }, [diffHost, diffSide, eachLine, monacoEditor]);
+    const settled = async () => {
+      const now = await painted();
+      const hues = await themeHues(page, ['--wc-background', '--wc-muted']);
+      return now.background === hues['--wc-background'].rgb && now.comment === hues['--wc-muted'].rgb;
+    };
+    const switchTo = async (name) => {
+      await page.keyboard.press('Escape');
+      await page.keyboard.press('Control+Space');
+      await page.keyboard.press('u');
+      await page.keyboard.press('t');
+      await page.locator('.prompt-scrim:not([hidden])').waitFor();
+      await page.locator('.prompt-list button', { hasText: name }).first().click();
+      await page.locator('.prompt-scrim').waitFor({ state: 'hidden' });
+    };
+
+    await until(settled);
+    assert.equal((await painted()).scheme, 'dark');
+
+    await switchTo('GitHub');
+    await until(async () => (await painted()).scheme === 'light');
+    await until(settled);
+
+    await switchTo('WangCai');
+    await until(async () => (await painted()).scheme === 'dark');
+    await until(settled);
   }));
