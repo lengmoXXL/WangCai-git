@@ -15,8 +15,14 @@ export function editorTheme(theme: Theme, font: Font) {
     '.cm-scroller': lineHeight ? { fontFamily: font.family, lineHeight: `${lineHeight}px` } : { fontFamily: font.family },
     '&.cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': { backgroundColor: theme.selection },
     '.cm-gutters': { backgroundColor: theme.background, color: theme.muted, border: 'none' },
-    // The caret as the block vim draws, in the editor's cursor colour.
-    '.cm-cursor, .cm-dropCursor': { borderLeft: 'none', width: '0.6em', backgroundColor: theme.cursor },
+    // The caret as the block vim draws, in the editor's cursor colour; the selector is as long as the editor's because
+    // the vim package and the base theme reach this element with selectors of their own, some later in the sheet.
+    '&.cm-editor.cm-focused .cm-fat-cursor': { backgroundColor: theme.cursor },
+    // The line the caret is on carries the editor's overlay below the text, standing down while a selection is on screen
+    // so a visual mode's highlight is not banded across by the line's own box.
+    '.cm-activeLine': { position: 'relative', backgroundColor: 'transparent' },
+    '.cm-activeLine::before': { content: '""', position: 'absolute', inset: '0', zIndex: '-10', backgroundColor: theme.overlay },
+    '&:has(.cm-selectionBackground) .cm-activeLine::before': { backgroundColor: 'transparent' },
     '.cm-scroller::-webkit-scrollbar': { width: '10px', height: '10px' },
     '.cm-scroller::-webkit-scrollbar-thumb': { backgroundColor: theme.muted, borderRadius: '5px' },
     '.cm-scroller::-webkit-scrollbar-thumb:hover': { backgroundColor: theme.foreground },

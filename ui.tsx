@@ -2,8 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import type { CSSProperties, RefObject, UIEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ChangeSet, Compartment, EditorState } from '@codemirror/state';
-import { EditorView, drawSelection, lineNumbers } from '@codemirror/view';
+import { EditorView, drawSelection, highlightActiveLine, lineNumbers } from '@codemirror/view';
 import { MergeView, getChunks, getOriginalDoc, goToNextChunk, goToPreviousChunk, originalDocChangeEffect, unifiedMergeView } from '@codemirror/merge';
+import { Vim, getCM, vim, type CodeMirrorV } from '@replit/codemirror-vim';
 import { editorTheme } from './theme';
 import { modeFor } from './mode';
 import type { FileClick, Theme, WorkspaceActive } from '@lengmoxxl/sdk';
@@ -59,6 +60,20 @@ type Caret = { line: number; column: number };
 type Keys = { take?: Comparison; enter?: () => void };
 type Jump = { next: () => void; previous: () => void };
 
+// The view behind the vim adapter: `cm6` is the field it carries the CodeMirror view in, which its own types do not say.
+const viewOf = (cm: unknown) => (cm as { cm6?: EditorView }).cm6;
+
+// ]c and [c walk the changes the way vim's diff mode does, defined once for the window since the vim layer is one state
+// shared by every view; a count walks that many, and the walk wraps round the ends as the toolbar's buttons do.
+for (const [keys, walk] of [[']c', goToNextChunk], ['[c', goToPreviousChunk]] as [string, typeof goToNextChunk][]) {
+  const name = `wangcai-git-${keys === ']c' ? 'next' : 'previous'}-change`;
+  Vim.defineAction(name, (cm, args) => {
+    const view = viewOf(cm);
+    if (view) for (let at = 0; at < (args.repeat || 1); at += 1) walk(view);
+  });
+  Vim.mapCommand(keys, 'action', name, {}, { context: 'normal' });
+}
+
 function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: {
   diff: Diff; path: string; reading: Reading; wrap: boolean; caret: RefObject<Caret | undefined>;
   keys: RefObject<Keys>; jumps: RefObject<Jump | undefined>; changes: (count: number) => void;
@@ -83,7 +98,7 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
     const common = [
       colours.of(editorTheme(theme, font)),
       wrapping.of(wrap ? EditorView.lineWrapping : []),
-      lineNumbers(), drawSelection(), EditorState.readOnly.of(true), modeFor(path),
+      lineNumbers(), drawSelection(), highlightActiveLine(), vim(), EditorState.readOnly.of(true), modeFor(path),
       EditorView.updateListener.of((update) => {
         if (update.selectionSet) caret.current = now(update.state);
       }),
@@ -134,7 +149,6 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
     const rewrap = (on: boolean) => { for (const view of views) view.dispatch({ effects: wrapping.reconfigure(on ? EditorView.lineWrapping : []) }); };
     const offTheme = bus.subscribe<Theme>('theme', (next) => { for (const view of views) view.dispatch({ effects: colours.reconfigure(editorTheme(next, font)) }); });
     scroller.scrollTop = keptScroll.current;
-    const lineHeight = side.defaultLineHeight;
     const seat = (line: number, column: number) => {
       const at = side.state.doc.line(Math.min(side.state.doc.lines, Math.max(1, line)));
       return Math.min(at.to, at.from + Math.max(0, column - 1));
@@ -151,69 +165,20 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
       const box = scroller.getBoundingClientRect();
       if (!coords || coords.top < box.top || coords.bottom > box.bottom) side.dispatch({ effects: EditorView.scrollIntoView(head, { y: 'center' }) });
     };
-    const go = (line: number) => { side.dispatch({ selection: { anchor: seat(line, 1) } }); reveal(); };
-    const column = (value: number) => { side.dispatch({ selection: { anchor: seat(now().line, value) } }); };
-    const screenful = () => Math.max(1, Math.floor(scroller.clientHeight / lineHeight) - 1);
-    const scroll = (lines: number) => { scroller.scrollTop += lines * lineHeight; go(now().line + lines); };
     if (caret.current) {
       const at = seat(caret.current.line, caret.current.column);
       side.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: 'center' }) });
     }
     jumps.current = { next: () => { goToNextChunk(side); }, previous: () => { goToPreviousChunk(side); } };
     changes(count());
-    // A count typed before a key makes that key's motion run that many times, as vim reads one, and the press that reads
-    // it spends it: a count only ever reaches the key it was typed for.
-    let typed = 0;
-    const counted = (run: (times: number) => void) => () => { const times = typed || 1; typed = 0; run(times); };
-    const digit = (value: number) => { typed = typed * 10 + value; };
-    // A key that takes no count spends one all the same, so digits left waiting do not walk the key after them.
-    const plain = (run: () => void) => counted(() => run());
-    const lineStart = () => column(1);
-    const lineEnd = () => { side.dispatch({ selection: { anchor: side.state.doc.lineAt(side.state.selection.main.head).to } }); };
-    // The keys a vim reader reaches for in a read-only diff.
-    const down = counted(times => go(now().line + times));
-    const up = counted(times => go(now().line - times));
-    const left = plain(() => column(now().column - 1));
-    const right = plain(() => column(now().column + 1));
-    // vim's own ]c and [c walk one change, or as many as a count asks for.
-    const walk = (direction: 'next' | 'previous') => counted(times => {
-      for (let at = 0; at < times; at += 1) jumps.current?.[direction]();
-    });
-    const unbind = bindKeys(host, [
-      { keys: '<C-d>', run: plain(() => scroll(Math.round(screenful() / 2))) },
-      { keys: '<C-u>', run: plain(() => scroll(-Math.round(screenful() / 2))) },
-      { keys: '<C-f>', run: plain(() => scroll(screenful())) },
-      { keys: '<C-b>', run: plain(() => scroll(-screenful())) },
-      // The digits that make a count; `0` is one only once a count is under way, since alone it names the line's start.
-      ...'123456789'.split('').map((key) => ({ keys: key, run: () => digit(Number(key)) })),
-      { keys: '0', run: () => { if (typed) digit(0); else lineStart(); } },
-      { keys: 'j', run: down },
-      { keys: '<Down>', run: down },
-      { keys: 'k', run: up },
-      { keys: '<Up>', run: up },
-      { keys: 'h', run: left },
-      { keys: '<Left>', run: left },
-      { keys: 'l', run: right },
-      { keys: '<Right>', run: right },
-      { keys: '<Home>', run: plain(lineStart) },
-      { keys: '$', run: plain(lineEnd) },
-      { keys: '<End>', run: plain(lineEnd) },
-      { keys: 'G', run: plain(() => go(side.state.doc.lines)) },
-      { keys: 'gg', run: plain(() => go(1)) },
-      { keys: ']c', run: walk('next') },
-      { keys: '[c', run: walk('previous') },
-    ], { fields: 'all' });
-    // A key held down repeats, and the table drops every repeat so that a prefix like `gg` is not entered twice by one
-    // hold; the two line motions read their own repeats here, which is what keeps the caret walking while j or k is down.
-    const motions: Record<string, () => void> = { j: down, k: up };
-    const repeated = (event: KeyboardEvent) => {
-      if (!event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
-      const motion = motions[event.key];
-      if (!motion) return;
-      event.preventDefault();
-      motion();
+    // A press that leaves the diff hands the keys to the rail, and an insert mode still open would be open again when
+    // the keys come back, so it is ended on the way out as the editor ends one.
+    const leaveInsert = (event: FocusEvent) => {
+      if (event.relatedTarget instanceof Node && host.contains(event.relatedTarget)) return;
+      const cm = getCM(side);
+      if (cm) Vim.exitInsertMode(cm as CodeMirrorV, true);
     };
-    host.addEventListener('keydown', repeated, true);
+    host.addEventListener('focusout', leaveInsert);
     keys.current.enter = () => side.focus();
     // A rebuild into the other reading mode must not drop the focus the keys were just handed.
     if (keptFocus.current) side.focus();
@@ -222,7 +187,7 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
       keptScroll.current = scroller.scrollTop;
       keptFocus.current = side.hasFocus;
       keys.current.enter = undefined; jumps.current = undefined;
-      host.removeEventListener('keydown', repeated, true); unbind(); offTheme();
+      host.removeEventListener('focusout', leaveInsert); offTheme();
       destroy(); held.current = undefined;
     };
   }, [path, unified]);

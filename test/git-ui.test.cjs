@@ -152,11 +152,11 @@ const inDiff = (page) => page.evaluate(([host, side]) => {
   return Boolean(active && active.closest(`${host} ${side}`));
 }, [diffHost, diffSide]);
 
-// A key held down repeats, which the window's key table drops so that one hold cannot enter a prefix twice; the diff reads
-// those presses itself, so a hold is played here as the repeat the browser sends.
-const hold = (page, key) => page.evaluate(([host, key]) => {
-  document.querySelector(host).dispatchEvent(new KeyboardEvent('keydown', { key, repeat: true, bubbles: true }));
-}, [diffHost, key]);
+// A key held down repeats, and vim reads the repeat the browser sends to the element with the focus, so a hold is played
+// here on that element rather than on the pane around it.
+const hold = (page, key) => page.evaluate((key) => {
+  document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key, repeat: true, bubbles: true }));
+}, key);
 
 // Ctrl+Shift+h is answered in the main process, so the press that follows waits for the keys to land back in the rail —
 // the row they land on, which the page draws a moment after the focus reaches it.
@@ -657,9 +657,7 @@ test('The rail answers hjkl, hands the keys to the diff, and the diff answers th
     await modifiedLines(page).filter({ hasText: 'const line1 = 1 + 1;' }).waitFor();
     // The file opened with the keys takes the focus, which is what makes the motions below the diff's own.
     assert.ok(await inDiff(page), 'opening a file with l hands the focus to its diff');
-    // The carets the diff draws, whose style the editor sets from its own options.
-    // The caret the diff draws is the block vim reads, wider than a plain text caret.
-    const carets = page.locator(`${diffHost} ${diffSide} .cm-cursor-primary`);
+    const carets = page.locator(`${diffHost} ${diffSide} .cm-fat-cursor.cm-cursor-primary`);
     assert.ok(await carets.evaluate((element) => parseFloat(getComputedStyle(element).width) > 2), 'the diff holds its caret as a block, the way vim draws one');
     // The two panes hand the keys back and forth along the row they sit in, on the keys the page claims from the core.
     await toRail(page);
