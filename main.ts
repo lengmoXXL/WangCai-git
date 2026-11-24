@@ -8,6 +8,7 @@ const showView = { event: 'core:show-view', data: { plugin: 'git' } };
 
 export const keys = {
   '<leader>gg': { global: true, insert: true, desc: ['git', '打开 Git 视图'], ...showView },
+  '<leader>gf': { insert: true, desc: ['goto', '打开文件'], event: 'git:open-file' },
   // The page's own Ctrl+Shift+h and Ctrl+Shift+l: the core's Ctrl+h and Ctrl+l walk the window's panes, so the page
   // keeps this pair for itself and answers it only while it holds the keys.
   '<C-S-h>': { insert: true, desc: '回到 Git 列表', event: 'git:focus-rail' },

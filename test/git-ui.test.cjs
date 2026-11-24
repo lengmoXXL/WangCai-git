@@ -169,10 +169,9 @@ test('The rail answers hjkl, folds sections and toggles commits', { timeout: cas
     assert.equal(await heldKey(page), 'change:unstaged:a.ts', 'j walks down into the section');
     // A commit row toggles its files where it stands, and h on one of those files closes the commit it hangs under.
     await page.keyboard.press('G');
+    // The last row is a commit's file when its commit stands open; h closes that and leaves the keys on the commit row.
+    await page.keyboard.press('h');
     assert.match(await heldKey(page), /^commit:/, 'G lands on the last commit row');
-    // The first commit opens with the repository; l closes it, and l again opens it.
-    await page.keyboard.press('l');
-    await commitFiles(page).first().waitFor({ state: 'detached' });
     await page.keyboard.press('l');
     await commitFiles(page).first().waitFor();
     await page.keyboard.press('j');

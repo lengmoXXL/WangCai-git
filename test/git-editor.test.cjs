@@ -57,8 +57,11 @@ test('a file chosen in the Git list opens its comparison in the editor', { timeo
 
   // Choosing the unstaged file hands the comparison to the editor, which draws both sides of it.
   await page.locator('.git-rail details').filter({ has: page.locator('summary', { hasText: /^未暂存/ }) }).locator('.git-file').first().click();
-  const readingButton = page.getByRole('button', { name: /^阅读方式/ });
-  for (let at = 0; at < 3 && await readingButton.getAttribute('aria-label') !== '阅读方式 双栏'; at += 1) await readingButton.click();
+  const gear = page.getByRole('button', { name: '差异设置' });
+  await gear.click();
+  const reading = page.locator('.code-menu button').filter({ hasText: /^阅读方式/ });
+  for (let at = 0; at < 3 && (await reading.innerText()) !== '阅读方式：双栏'; at += 1) await reading.click();
+  await page.keyboard.press('Escape');
   await lineShown(page, '.cm-merge-a', "const greet = 'hi';");
   await lineShown(page, '.cm-merge-b', "const greet = 'hello';");
   assert.ok(await page.locator('.editor-diff').isVisible(), 'the editor shows the comparison');

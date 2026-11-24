@@ -58,7 +58,7 @@ const comparisonUri = (root: string, comparison: Comparison): string => {
 
 function FileRow({ file, row, cursor, select }: { file: GitFile; row: string; cursor: string; select: () => void }) {
   const cut = file.path.lastIndexOf('/');
-  return <button className="git-file" data-row={row} data-cursor={mark(cursor, row)} title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={select}>
+  return <button className="git-file" data-row={row} data-path={file.path} data-cursor={mark(cursor, row)} title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={select}>
     <span className={`git-status git-status-${file.status}`}>{file.status}</span>
     <span className="git-path">{cut < 0 ? file.path : <>
       <span className="git-dir">{file.path.slice(0, cut + 1)}</span><span>{file.path.slice(cut + 1)}</span>
@@ -217,6 +217,14 @@ function Repository({ context, terminal, activation, autoRefresh }: { context: U
     void context.global.publish('onclick', { type: 'file', machine: terminal.machine, path: comparisonUri(overview.root, next) } satisfies FileClick);
     void context.global.publish('core:show-view', { plugin: 'editor' });
   };
+  // leader gf opens the held file as a normal editable view rather than a comparison: the worktree file itself.
+  const openHeldFile = () => {
+    const path = heldRow()?.dataset.path;
+    if (!path || !overview) return;
+    setRailPeek(false);
+    void context.global.publish('onclick', { type: 'file', machine: terminal.machine, path: absolute(overview.root, path) } satisfies FileClick);
+    void context.global.publish('core:show-view', { plugin: 'editor' });
+  };
   const into = () => { heldRow()?.click(); };
   const out = () => {
     const row = heldRow();
@@ -248,7 +256,8 @@ function Repository({ context, terminal, activation, autoRefresh }: { context: U
   useEffect(() => {
     const backToRail = context.global.subscribe('git:focus-rail', () => { if (shown()) leaveDiff(); });
     const intoDiff = context.global.subscribe('git:focus-diff', () => { if (shown()) into(); });
-    return () => { backToRail(); intoDiff(); };
+    const openFile = context.global.subscribe('git:open-file', () => { if (shown()) openHeldFile(); });
+    return () => { backToRail(); intoDiff(); openFile(); };
   }, [context, railShown, railPeek]);
   // The rail answers the keys the way a vim list does. The width handle reads its own keys, so a press made in it is
   // not a press for the rail.
