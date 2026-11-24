@@ -1,9 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, RefObject, UIEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import * as monaco from 'monaco-editor/editor/editor.api.js';
-import 'monaco-editor/features/codicon/register.js';
-import 'monaco-editor/basic-languages/monaco.contribution.js';
+import { ChangeSet, Compartment, EditorState } from '@codemirror/state';
+import { EditorView, drawSelection, lineNumbers } from '@codemirror/view';
+import { MergeView, getChunks, getOriginalDoc, goToNextChunk, goToPreviousChunk, originalDocChangeEffect, unifiedMergeView } from '@codemirror/merge';
+import { editorTheme } from './theme';
+import { modeFor } from './mode';
 import type { FileClick, Theme, WorkspaceActive } from '@lengmoxxl/sdk';
 import type { TabRecord, UiContext } from '@lengmoxxl/sdk/channel';
 import { bindKeys, pressIn } from '@lengmoxxl/sdk/keys';
@@ -12,6 +14,8 @@ import './style.css';
 
 export const title = 'Git';
 let font: Font;
+let theme: Theme;
+let bus: UiContext['global'];
 let activeWorkspaceId: string | undefined;
 const stages: Record<Stage, string> = { conflicted: '冲突', staged: '已暂存', unstaged: '未暂存', untracked: '未跟踪' };
 const readingOrder = ['auto', 'split', 'inline'] as const;
@@ -45,60 +49,6 @@ const rowKey = {
 // The mark a row draws while the keys hold it: an empty value the walk reads back off the page.
 const mark = (cursor: string, row: string) => cursor === row ? '' : undefined;
 
-function editorTheme(theme: Theme): monaco.editor.IStandaloneThemeData {
-  const hex = (color: string) => color.slice(1);
-  const alpha = (color: string, value: number) => `${color}${Math.round(value * 255).toString(16).padStart(2, '0')}`;
-  return {
-    base: getComputedStyle(document.documentElement).colorScheme === 'light' ? 'vs' : 'vs-dark',
-    inherit: true,
-    rules: [
-      { token: 'comment', foreground: hex(theme.muted) },
-      { token: 'string', foreground: hex(theme.green) },
-      { token: 'number', foreground: hex(theme.yellow) },
-      { token: 'keyword', foreground: hex(theme.magenta) },
-      { token: 'type', foreground: hex(theme.cyan) },
-      { token: 'function', foreground: hex(theme.blue) },
-      { token: 'constant', foreground: hex(theme.brightMagenta) },
-      { token: 'delimiter', foreground: hex(theme.foreground) },
-      { token: 'regexp', foreground: hex(theme.red) },
-      // The language-specific tokens the editor's HighlightStyle reaches through lezer tags; left out, Monaco's inherited
-      // base theme paints them in its own palette. Monaco gives a CSS function name the same token as a value identifier,
-      // so var( takes the value hue here while the editor spells it as a keyword.
-      { token: 'attribute.name', foreground: hex(theme.foreground) },
-      { token: 'attribute.value', foreground: hex(theme.blue) },
-      { token: 'attribute.value.number', foreground: hex(theme.yellow) },
-      { token: 'attribute.value.unit', foreground: hex(theme.magenta) },
-      { token: 'attribute.value.hex', foreground: hex(theme.foreground) },
-      // The base theme carries language-suffixed rules, which sit deeper in the token trie and outrank the plain ones.
-      { token: 'attribute.value.number.css', foreground: hex(theme.yellow) },
-      { token: 'attribute.value.unit.css', foreground: hex(theme.magenta) },
-      { token: 'attribute.value.hex.css', foreground: hex(theme.foreground) },
-      { token: 'tag', foreground: hex(theme.cyan) },
-      { token: 'namespace', foreground: hex(theme.cyan) },
-      { token: 'variable', foreground: hex(theme.foreground) },
-    ],
-    colors: {
-      'editor.background': theme.background,
-      'editor.foreground': theme.foreground,
-      'editorLineNumber.foreground': theme.muted,
-      'editorCursor.foreground': theme.cursor,
-      'editor.selectionBackground': theme.selection,
-      'editorWidget.background': theme.overlay,
-      'editorWidget.border': theme.border,
-      'editorGutter.background': theme.background,
-      'editorBracketHighlight.foreground1': theme.foreground,
-      'editorBracketHighlight.foreground2': theme.foreground,
-      'editorBracketHighlight.foreground3': theme.foreground,
-      'diffEditor.insertedTextBackground': alpha(theme.green, 0.2),
-      'diffEditor.removedTextBackground': alpha(theme.red, 0.2),
-      'diffEditor.insertedLineBackground': alpha(theme.green, 0.08),
-      'diffEditor.removedLineBackground': alpha(theme.red, 0.08),
-      'scrollbarSlider.background': alpha(theme.muted, 0.25),
-      'scrollbarSlider.hoverBackground': alpha(theme.muted, 0.4),
-      'scrollbarSlider.activeBackground': alpha(theme.muted, 0.5),
-    },
-  };
-}
 
 // Where the caret sits in the diff: the line and column the toolbar hands the file it opens, and the point the editor
 // puts it back at when a note gives way to the diff again.
@@ -114,67 +64,103 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
   keys: RefObject<Keys>; jumps: RefObject<Jump | undefined>; changes: (count: number) => void;
 }) {
   const element = useRef<HTMLDivElement>(null);
-  const editor = useRef<monaco.editor.IStandaloneDiffEditor>(undefined);
-  const options = {
-    renderSideBySide: reading !== 'inline',
-    useInlineViewWhenSpaceIsLimited: reading === 'auto',
-    wordWrap: wrap ? 'on' : 'off',
-  } as const;
+  const held = useRef<{ side: EditorView; write: (oldText: string, newText: string) => void; count: () => number; rewrap: (on: boolean) => void; reveal: () => void; destroy: () => void; now: (state?: EditorState) => { line: number; column: number }; seat: (line: number, column: number) => number }>(undefined);
+  // Auto reading draws the inline view while the pane is narrow, the same 900px breakpoint the diff drew with before.
+  const [narrow, setNarrow] = useState(false);
+  const unified = reading === 'inline' || (reading === 'auto' && narrow);
+  const keptScroll = useRef(0);
+  const keptFocus = useRef(false);
   useEffect(() => {
-    // Each plugin bundles Monaco; its theme rules must stay inside its own editor.
-    const shadow = element.current!.shadowRoot ?? element.current!.attachShadow({ mode: 'open' });
-    const stylesheet = document.createElement('link');
-    stylesheet.rel = 'stylesheet';
-    stylesheet.href = new URL('./ui.css', import.meta.url).href;
-    const container = document.createElement('div');
-    container.style.height = '100%';
-    shadow.replaceChildren(stylesheet, container);
-    const size = font.size;
-    const view = monaco.editor.createDiffEditor(container, {
-      theme: 'wangcai', readOnly: true, domReadOnly: true,
-      automaticLayout: true, scrollBeyondLastLine: false,
-      renderOverviewRuler: false,
-      ...options, fontSize: size, lineHeight: font.lineHeight ? Math.round(size * font.lineHeight) : 0, fontFamily: font.family, lineNumbersMinChars: 3, contextmenu: false, cursorStyle: 'block',
-    });
-    const name = path.split('/').pop()!;
-    const language = monaco.languages.getLanguages().find(item => item.filenames?.includes(name) || item.extensions?.some(extension => name.endsWith(extension)))?.id ?? 'plaintext';
-    const original = monaco.editor.createModel(diff.oldText, language);
-    const modified = monaco.editor.createModel(diff.newText, language);
-    view.setModel({ original, modified });
-    const leftSide = view.getOriginalEditor();
-    leftSide.updateOptions({ glyphMargin: false });
-    // Monaco turns the original's wrap off (wordWrapOverride2) while a narrow pane shows the inline view and never
-    // restores it when the pane widens, leaving the left unwrapped beside a wrapped right. Clear the override whenever
-    // the diff pushes options so both sides read the same wordWrap.
-    const unwrapped = leftSide.onDidChangeConfiguration(() => {
-      if (leftSide.getOption(monaco.editor.EditorOption.wordWrapOverride2) !== 'inherit') leftSide.updateOptions({ wordWrapOverride2: 'inherit' });
-    });
-    jumps.current = { next: () => view.goToDiff('next'), previous: () => view.goToDiff('previous') };
-    // A pane that is set and never edited computes its diff then and there, so the blocks are counted once here as well.
-    const count = () => changes(view.getLineChanges()?.length ?? 0);
-    const updated = view.onDidUpdateDiff(count);
-    count();
-    // The caret is taken from the side the diff draws as modified, the side a change leads to.
-    const side = view.getModifiedEditor();
-    const at = caret.current && { lineNumber: caret.current.line, column: caret.current.column };
-    if (at) { side.setPosition(at); side.revealPositionInCenter(at); }
-    const moved = side.onDidChangeCursorPosition(({ position }) => { caret.current = { line: position.lineNumber, column: position.column }; });
-    // The model the pane draws is the one set above and keeps its text in place, so both it and the line height are read
-    // once; the caret and the layout are what the keys have to read fresh.
-    const model = side.getModel()!;
-    const lineHeight = side.getOption(monaco.editor.EditorOption.lineHeight) || 1;
-    const screenful = () => Math.max(1, Math.floor(side.getLayoutInfo().height / lineHeight) - 1);
-    const now = () => side.getPosition() ?? { lineNumber: 1, column: 1 };
-    const go = (line: number) => {
-      const seat = { lineNumber: Math.min(model.getLineCount(), Math.max(1, line)), column: 1 };
-      side.setPosition(seat);
-      side.revealPositionInCenterIfOutsideViewport(seat);
+    const host = element.current!;
+    const sized = new ResizeObserver(() => setNarrow(host.clientWidth < 900));
+    sized.observe(host);
+    return () => sized.disconnect();
+  }, []);
+  useEffect(() => {
+    const host = element.current!;
+    const colours = new Compartment();
+    const wrapping = new Compartment();
+    const now = (state: EditorState = side.state) => {
+      const head = state.selection.main.head;
+      const line = state.doc.lineAt(head);
+      return { line: line.number, column: head - line.from + 1 };
     };
-    const scroll = (lines: number) => { side.setScrollTop(side.getScrollTop() + lines * lineHeight); go(now().lineNumber + lines); };
-    const column = (value: number) => {
-      const here = now();
-      side.setPosition({ lineNumber: here.lineNumber, column: Math.min(model.getLineMaxColumn(here.lineNumber), Math.max(1, value)) });
+    const common = [
+      colours.of(editorTheme(theme, font)),
+      wrapping.of(wrap ? EditorView.lineWrapping : []),
+      lineNumbers(), drawSelection(), EditorState.readOnly.of(true), modeFor(path),
+      EditorView.updateListener.of((update) => {
+        if (update.selectionSet) caret.current = now(update.state);
+      }),
+    ];
+    // The smallest edit that turns one text into the other, so a read only rewrites the span that changed.
+    const edit = (before: string, text: string) => {
+      if (before === text) return undefined;
+      const shortest = Math.min(before.length, text.length);
+      let head = 0;
+      while (head < shortest && before[head] === text[head]) head++;
+      let tail = 0;
+      while (tail < shortest - head && before[before.length - 1 - tail] === text[text.length - 1 - tail]) tail++;
+      return { from: head, to: before.length - tail, insert: text.slice(head, text.length - tail) };
     };
+    let side: EditorView, scroller: HTMLElement, views: EditorView[], count: () => number,
+      write: (oldText: string, newText: string) => void, destroy: () => void;
+    if (unified) {
+      const view = new EditorView({
+        state: EditorState.create({ doc: diff.newText, extensions: [...common, unifiedMergeView({ original: diff.oldText, mergeControls: false, gutter: false })] }),
+        parent: host,
+      });
+      side = view; scroller = view.scrollDOM; views = [view];
+      count = () => getChunks(view.state)?.chunks.length ?? 0;
+      write = (oldText, newText) => {
+        const after = edit(view.state.doc.toString(), newText);
+        const original = getOriginalDoc(view.state).toString();
+        const before = edit(original, oldText);
+        if (!after && !before) return;
+        view.dispatch({ changes: after, effects: before ? originalDocChangeEffect(view.state, ChangeSet.of(before, original.length)) : [] });
+      };
+      destroy = () => view.destroy();
+    } else {
+      const view = new MergeView({
+        a: { doc: diff.oldText, extensions: common },
+        b: { doc: diff.newText, extensions: common },
+        parent: host, gutter: false,
+      });
+      side = view.b; scroller = view.dom; views = [view.a, view.b];
+      count = () => view.chunks.length;
+      write = (oldText, newText) => {
+        const before = edit(view.a.state.doc.toString(), oldText);
+        const after = edit(view.b.state.doc.toString(), newText);
+        if (before) view.a.dispatch({ changes: before });
+        if (after) view.b.dispatch({ changes: after });
+      };
+      destroy = () => view.destroy();
+    }
+    const rewrap = (on: boolean) => { for (const view of views) view.dispatch({ effects: wrapping.reconfigure(on ? EditorView.lineWrapping : []) }); };
+    const offTheme = bus.subscribe<Theme>('theme', (next) => { for (const view of views) view.dispatch({ effects: colours.reconfigure(editorTheme(next, font)) }); });
+    scroller.scrollTop = keptScroll.current;
+    const lineHeight = side.defaultLineHeight;
+    const seat = (line: number, column: number) => {
+      const at = side.state.doc.line(Math.min(side.state.doc.lines, Math.max(1, line)));
+      return Math.min(at.to, at.from + Math.max(0, column - 1));
+    };
+    // The caret is revealed at the centre only when the scroll no longer shows it.
+    const reveal = () => {
+      const head = side.state.selection.main.head;
+      const coords = side.coordsAtPos(head);
+      const box = scroller.getBoundingClientRect();
+      if (!coords || coords.top < box.top || coords.bottom > box.bottom) side.dispatch({ effects: EditorView.scrollIntoView(head, { y: 'center' }) });
+    };
+    const go = (line: number) => { side.dispatch({ selection: { anchor: seat(line, 1) } }); reveal(); };
+    const column = (value: number) => { side.dispatch({ selection: { anchor: seat(now().line, value) } }); };
+    const screenful = () => Math.max(1, Math.floor(scroller.clientHeight / lineHeight) - 1);
+    const scroll = (lines: number) => { scroller.scrollTop += lines * lineHeight; go(now().line + lines); };
+    if (caret.current) {
+      const at = seat(caret.current.line, caret.current.column);
+      side.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: 'center' }) });
+    }
+    jumps.current = { next: () => { goToNextChunk(side); }, previous: () => { goToPreviousChunk(side); } };
+    changes(count());
     // A count typed before a key makes that key's motion run that many times, as vim reads one, and the press that reads
     // it spends it: a count only ever reaches the key it was typed for.
     let typed = 0;
@@ -183,13 +169,10 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
     // A key that takes no count spends one all the same, so digits left waiting do not walk the key after them.
     const plain = (run: () => void) => counted(() => run());
     const lineStart = () => column(1);
-    const lineEnd = () => column(model.getLineMaxColumn(now().lineNumber));
-    // The keys a vim reader reaches for in a read-only diff, kept beside Monaco's own, which keeps every binding this does
-    // not read.
-    // The keys are bound to the host because that is what a press made inside the shadow tree is retargeted to.
-    const host = element.current!;
-    const down = counted(times => go(now().lineNumber + times));
-    const up = counted(times => go(now().lineNumber - times));
+    const lineEnd = () => { side.dispatch({ selection: { anchor: side.state.doc.lineAt(side.state.selection.main.head).to } }); };
+    // The keys a vim reader reaches for in a read-only diff.
+    const down = counted(times => go(now().line + times));
+    const up = counted(times => go(now().line - times));
     const left = plain(() => column(now().column - 1));
     const right = plain(() => column(now().column + 1));
     // vim's own ]c and [c walk one change, or as many as a count asks for.
@@ -215,7 +198,7 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
       { keys: '<Home>', run: plain(lineStart) },
       { keys: '$', run: plain(lineEnd) },
       { keys: '<End>', run: plain(lineEnd) },
-      { keys: 'G', run: plain(() => go(model.getLineCount())) },
+      { keys: 'G', run: plain(() => go(side.state.doc.lines)) },
       { keys: 'gg', run: plain(() => go(1)) },
       { keys: ']c', run: walk('next') },
       { keys: '[c', run: walk('previous') },
@@ -223,46 +206,40 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
     // A key held down repeats, and the table drops every repeat so that a prefix like `gg` is not entered twice by one
     // hold; the two line motions read their own repeats here, which is what keeps the caret walking while j or k is down.
     const motions: Record<string, () => void> = { j: down, k: up };
-    const held = (event: KeyboardEvent) => {
+    const repeated = (event: KeyboardEvent) => {
       if (!event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
       const motion = motions[event.key];
       if (!motion) return;
       event.preventDefault();
       motion();
     };
-    host.addEventListener('keydown', held, true);
+    host.addEventListener('keydown', repeated, true);
     keys.current.enter = () => side.focus();
-    editor.current = view;
-    return () => { keys.current.enter = undefined; jumps.current = undefined; host.removeEventListener('keydown', held, true); unbind(); updated.dispose(); moved.dispose(); unwrapped.dispose(); editor.current = undefined; view.dispose(); original.dispose(); modified.dispose(); };
-  }, [path]);
-  // A read of the file the pane already shows rewrites the two sides where they stand: only the lines that changed
-  // redraw, and the caret and the scroll it was left at survive unless that scroll no longer shows the caret.
-  // The sides are edited apart rather than set whole: a model set to a new value drops every decoration.
-  useEffect(() => {
-    const view = editor.current!;
-    const models = view.getModel()!;
-    if (models.original.getValue() === diff.oldText && models.modified.getValue() === diff.newText) return;
-    const write = (model: monaco.editor.ITextModel, text: string) => {
-      const before = model.getValue();
-      if (before === text) return;
-      const shortest = Math.min(before.length, text.length);
-      let head = 0;
-      while (head < shortest && before[head] === text[head]) head++;
-      let tail = 0;
-      while (tail < shortest - head && before[before.length - 1 - tail] === text[text.length - 1 - tail]) tail++;
-      const from = model.getPositionAt(head);
-      const to = model.getPositionAt(before.length - tail);
-      model.applyEdits([{ range: monaco.Range.fromPositions(from, to), text: text.slice(head, text.length - tail) }]);
+    // A rebuild into the other reading mode must not drop the focus the keys were just handed.
+    if (keptFocus.current) side.focus();
+    held.current = { side, write, count, rewrap, reveal, destroy, now, seat };
+    return () => {
+      keptScroll.current = scroller.scrollTop;
+      keptFocus.current = side.hasFocus;
+      keys.current.enter = undefined; jumps.current = undefined;
+      host.removeEventListener('keydown', repeated, true); unbind(); offTheme();
+      destroy(); held.current = undefined;
     };
-    const kept = view.saveViewState();
-    write(models.original, diff.oldText);
-    write(models.modified, diff.newText);
-    view.restoreViewState(kept);
-    const side = view.getModifiedEditor();
-    const at = side.getPosition();
-    if (at && !side.getVisibleRanges().some((range) => range.containsPosition(at))) side.revealPositionInCenter(at);
+  }, [path, unified]);
+  // A read of the file the pane already shows rewrites the sides where they stand: only the span that changed is edited,
+  // so the caret and the scroll it was left at survive unless that scroll no longer shows the caret.
+  useEffect(() => {
+    const pane = held.current;
+    if (!pane) return;
+    const at = pane.now();
+    pane.write(diff.oldText, diff.newText);
+    // A read that rewrites the span the caret sits in maps it to the edit's edge, so it is seated back where it was.
+    const pos = pane.seat(at.line, at.column);
+    if (pane.side.state.selection.main.head !== pos) pane.side.dispatch({ selection: { anchor: pos } });
+    changes(pane.count());
+    pane.reveal();
   }, [diff]);
-  useEffect(() => { editor.current?.updateOptions(options); }, [reading, wrap]);
+  useEffect(() => { held.current?.rewrap(wrap); }, [wrap]);
   return <div className="git-editor" ref={element} />;
 }
 
@@ -740,28 +717,13 @@ export function open(context: UiContext, record?: TabRecord) {
 export async function mount(_container: HTMLElement, context: UiContext) {
   const profile: Settings = context.host.config;
   font = profile.font;
-  monaco.editor.defineTheme('wangcai', editorTheme(profile.theme));
-  // Defining the theme the editors already carry is what repaints them: Monaco refreshes when the name it is handed is
-  // the one in use, so the diff keeps its models, its scroll and its folds through a switch.
-  const offTheme = context.global.subscribe<Theme>('theme', (next) => { monaco.editor.defineTheme('wangcai', editorTheme(next)); });
+  theme = profile.theme;
+
+  bus = context.global;
+  // The colours live in the extensions each view was built with, so a switch of theme is read by the views already on
+  // screen through their own subscription; this keeps the palette a view built next starts from.
+  const offTheme = context.global.subscribe<Theme>('theme', (next) => { theme = next; });
   const offActive = context.global.subscribe<WorkspaceActive | null>('workspace:active', (value) => { activeWorkspaceId = value?.workspaceId; });
   void context.global.publish('workspace:query', null);
-  const response = await fetch(new URL('./ui.worker.js', import.meta.url));
-  if (!response.ok) throw new Error('Cannot load Git diff worker');
-  const workerURL = URL.createObjectURL(new Blob([await response.text()], { type: 'text/javascript' }));
-  const workers = new Set<Worker>();
-  const previous = self.MonacoEnvironment;
-  const environment = { getWorker() {
-    const worker = new Worker(workerURL, { type: 'module' });
-    workers.add(worker);
-    return worker;
-  } };
-  self.MonacoEnvironment = environment;
-  return () => {
-    offActive();
-    offTheme();
-    for (const worker of workers) worker.terminate();
-    URL.revokeObjectURL(workerURL);
-    if (self.MonacoEnvironment === environment) self.MonacoEnvironment = previous;
-  };
+  return () => { offActive(); offTheme(); };
 }

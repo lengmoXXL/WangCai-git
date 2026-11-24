@@ -60,7 +60,7 @@ const catchClicks = (page) => page.evaluate(() => {
 });
 const lastClick = (page) => page.evaluate(() => window.__clicks.at(-1));
 const clickCount = (page) => page.evaluate(() => window.__clicks.length);
-// A theme token as the shell wrote it and as the page paints it: the hex Monaco exposes, the rgb a computed colour reads
+// A theme token as the shell wrote it and as the page paints it: the hex it is written as, the rgb a computed colour reads
 // as, and the channels a tint of that token is spelled with.
 const themeHues = (page, names) => page.evaluate((list) => Object.fromEntries(list.map((name) => {
   const hex = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -81,17 +81,17 @@ const commitRows = (page) => gitRail(page).locator('.git-commit-row');
 const heldKey = (page) => gitRail(page).locator('[data-cursor]').getAttribute('data-row');
 // The diff's host and its two sides, which every diff selector below and the in-page read of a diff build on.
 const diffHost = '.git-editor';
-const diffSide = '.editor.modified';
-const diffOriginal = '.editor.original';
-// Monaco's class names, which every pane draws with: the box holding a pane's visible lines, one line inside it, and
-// the editor element a theme probe or an in-page read addresses.
-const allLines = '.view-lines';
-const eachLine = '.view-line';
-const monacoEditor = '.monaco-editor';
-const diffEditor = (page, variant = '') => page.locator(`${diffHost} .monaco-diff-editor${variant}`);
-const diffLines = (page) => page.locator(`${diffHost} ${allLines}`);
-const modifiedLines = (page) => page.locator(`${diffHost} ${diffSide} ${allLines}`);
-const originalLines = (page) => page.locator(`${diffHost} ${diffOriginal} ${allLines}`);
+const diffSide = '.cm-merge-b';
+const diffOriginal = '.cm-merge-a';
+// CodeMirror's class names: one line of text, the split view's box around its two editors, and the inline view's single
+// editor, which is the host's own child. Deleted text the inline view shows sits in a chunk widget of its own.
+const eachLine = '.cm-line';
+const diffEditor = (page, variant = '') => page.locator(`${diffHost} .cm-mergeView${variant}, ${diffHost} > .cm-editor${variant}`);
+const diffSplit = (page) => page.locator(`${diffHost} .cm-mergeView`);
+const diffInline = (page) => page.locator(`${diffHost} > .cm-editor`);
+const diffLines = (page) => page.locator(`${diffHost} ${eachLine}, ${diffHost} .cm-deletedChunk`);
+const modifiedLines = (page) => page.locator(`${diffHost} ${diffSide} ${eachLine}`);
+const originalLines = (page) => page.locator(`${diffHost} ${diffOriginal} ${eachLine}, ${diffHost} .cm-deletedChunk`);
 const readingPage = (page, mode) => page.locator(`.git-page[data-reading=${mode}]`);
 const statusMark = (page, mark) => page.locator(`.git-status-${mark}`);
 const refreshGit = (page) => page.getByRole('button', { name: '刷新 Git' });
@@ -136,11 +136,10 @@ const readLongChange = async (page, home, env, name) => {
   return file;
 };
 
-// Whether the diff draws that line on its modified side and inside the pane. Monaco writes the spaces of the file as
-// non-breaking ones, so the line is compared as plain spaces.
+// Whether the diff draws that line on its modified side and inside the pane.
 const diffShowsLine = (page, text) => page.evaluate(([host, side, eachLine, text]) => {
-  const root = document.querySelector(host).shadowRoot.querySelector(side);
-  const line = [...root.querySelectorAll(eachLine)].find((node) => node.textContent.replace(/\u00a0/g, ' ') === text);
+  const root = document.querySelector(host);
+  const line = [...root.querySelectorAll(`${side} ${eachLine}`)].find((node) => node.textContent === text);
   if (!line) return false;
   const box = line.getBoundingClientRect();
   const rootBox = root.getBoundingClientRect();
@@ -149,8 +148,8 @@ const diffShowsLine = (page, text) => page.evaluate(([host, side, eachLine, text
 
 // Whether the keys are inside the diff's modified side, which is where the diff's own motions read them.
 const inDiff = (page) => page.evaluate(([host, side]) => {
-  const active = document.querySelector(host)?.shadowRoot?.activeElement;
-  return Boolean(active && active.closest(side));
+  const active = document.activeElement;
+  return Boolean(active && active.closest(`${host} ${side}`));
 }, [diffHost, diffSide]);
 
 // A key held down repeats, which the window's key table drops so that one hold cannot enter a prefix twice; the diff reads
@@ -223,14 +222,14 @@ test('A Git tab follows the terminal, opens files from every list, and shows one
     }
     await sectionFiles(page, '已暂存').first().click();
     await diffLines(page).filter({ hasText: 'STAGED_VALUE' }).waitFor();
-    // Monaco swaps the rendered lines as the diff changes, so read the font until a live one reports it.
+    // The pane draws its lines as the diff settles, so read the font until a live one reports it.
     let font;
     await until(async () => (font = await diffLines(page).first().evaluate((element) => {
       const { fontSize, fontFamily } = getComputedStyle(element);
       return { fontSize, fontFamily };
     })).fontSize !== '');
     assert.equal(font.fontSize, '12px');
-    assert.match(font.fontFamily, /^"DejaVuSansM Nerd Font Mono"/);
+    assert.match(font.fontFamily, /^Menlo/);
     assert.ok(await openFile(page).isEnabled());
     await catchClicks(page);
     await openFile(page).click();
@@ -248,13 +247,11 @@ test('A Git tab follows the terminal, opens files from every list, and shows one
     await readingButton.click();
     assert.equal(await readingPage(page, 'split').count(), 1);
     assert.equal(await page.getByRole('button', { name: '阅读方式 双栏' }).count(), 1);
-    await diffEditor(page, '.side-by-side').waitFor();
-    const iconFontLoaded = await page.evaluate(async () => (await document.fonts.load('16px codicon')).length > 0);
-    assert.ok(iconFontLoaded, 'the icon font is bundled and loads successfully');
-    assert.equal(await page.locator(`${diffHost} .diff-hidden-lines-widget`).count(), 0, 'an unchanged line is never folded away');
+    await diffSplit(page).waitFor();
+    assert.equal(await page.locator(`${diffHost} .cm-collapsedLines`).count(), 0, 'an unchanged line is never folded away');
     await readingButton.click();
     assert.equal(await readingPage(page, 'inline').count(), 1);
-    await diffEditor(page, ':not(.side-by-side)').waitFor();
+    await diffInline(page).waitFor();
     const wrap = page.getByRole('button', { name: '长行折行' });
     assert.equal(await wrap.getAttribute('aria-pressed'), 'true');
     await wrap.click();
@@ -304,12 +301,11 @@ test('A Git tab follows the terminal, opens files from every list, and shows one
     assert.equal(await bodyPane.getAttribute('data-rail'), 'shown');
     const { '--wc-green': green, '--wc-red': red, '--wc-background': background } = await themeHues(page, ['--wc-green', '--wc-red', '--wc-background']);
     assert.equal(await statusMark(page, 'A').first().evaluate((element) => getComputedStyle(element).color), green.rgb, 'added shares the theme green with the diff tint');
-    assert.deepEqual(await page.locator(`${diffHost} ${monacoEditor}`).first().evaluate((element) => ['--vscode-editor-background', '--vscode-diffEditor-insertedTextBackground', '--vscode-diffEditor-removedTextBackground'].map((name) => getComputedStyle(element).getPropertyValue(name))), [background.hex, `rgba(${green.channels}, 0.2)`, `rgba(${red.channels}, 0.2)`]);
-    const workerReady = page.waitForEvent('worker');
-    await page.evaluate(() => window.MonacoEnvironment.getWorker('', 'editorWorkerService'));
-    const worker = await workerReady;
-    // A worker exists before it has installed its handler, so the handler is what is waited for.
-    await until(() => worker.evaluate(() => typeof self.onmessage === 'function'));
+    assert.deepEqual(await page.locator(`${diffHost} .cm-editor`).first().evaluate((element) => [
+      getComputedStyle(element).backgroundColor,
+      getComputedStyle(element.querySelector('.cm-changedText')).backgroundColor,
+      getComputedStyle(element.querySelector('.cm-deletedText')).backgroundColor,
+    ]), [background.rgb, `rgba(${green.channels}, 0.2)`, `rgba(${red.channels}, 0.2)`]);
     await diffPane.click({ button: 'right', position: { x: 60, y: 60 } });
     await page.getByRole('menuitem', { name: '关闭' }).click();
     assert.equal(await diffPane.count(), 0);
@@ -405,9 +401,11 @@ test('With auto refresh off, the Git page reads the repository only when asked',
     git('add', 'tracked.ts'); git('commit', '-qm', 'initial commit');
     await run(page, `cd '${repo}'`);
     await terminalShows(page, 'repo');
-    // The workspace follows the shell's directory and tells the tab, which reads the repository again: waiting for the
-    // branch waits for that read to land, so the page is idle from here until a read is asked for.
+    // The workspace follows the shell's directory and tells the tab, which reads the repository again.
     await mainBranch(page).waitFor();
+    // The shell's cd reaches the page as the workspace's rename, a tick of the core's renamer after the branch read:
+    // let that read land too, so the page is idle from here until a read is asked for.
+    await page.waitForTimeout(1500);
     writeFileSync(join(repo, 'asked.ts'), 'const asked = true;\n');
     git('add', 'asked.ts');
     await refreshGit(page).click();
@@ -511,7 +509,7 @@ test('The diff hands its caret to the opened file and keeps it across reads', { 
     await modifiedLines(page).filter({ hasText: 'const line1 = 1 + 1;' }).waitFor();
     // The caret goes deep into the file the way a reader moves it, with the keyboard: a click lands on a line the page
     // redraws under it, and a pane opens with the caret on its first line.
-    await page.evaluate(([host, side]) => document.querySelector(host).shadowRoot.querySelector(`${side} [tabindex="0"]`).focus(), [diffHost, diffSide]);
+    await page.evaluate(([host, side]) => document.querySelector(`${host} ${side} .cm-content`).focus(), [diffHost, diffSide]);
     for (let step = 0; step < 149; step++) await page.keyboard.press('ArrowDown');
     await catchClicks(page);
     await openFile(page).click();
@@ -542,14 +540,14 @@ test('A diff draws the lines it does not change, and a read keeps them drawn', {
     await sectionFiles(page, '未暂存').filter({ hasText: 'drawn.ts' }).click();
     await modifiedLines(page).filter({ hasText: 'TWO' }).waitFor();
     await modifiedLines(page).filter({ hasText: 'const line0 = 0;' }).waitFor();
-    assert.equal(await page.locator(`${diffHost} .diff-hidden-lines-widget`).count(), 0, 'no unchanged region is folded away');
+    assert.equal(await page.locator(`${diffHost} .cm-collapsedLines`).count(), 0, 'no unchanged region is folded away');
     // The file the pane shows is watched, so writing it reads the diff again.
     writeFileSync(file, `const value = 'THREE';\n${tail}`);
     await modifiedLines(page).filter({ hasText: 'THREE' }).waitFor();
     // The diff is recomputed once the pane has the new text, a debounced step the window below covers.
     await page.waitForTimeout(1000);
     assert.equal(await modifiedLines(page).filter({ hasText: 'const line0 = 0;' }).count(), 1, 'the read leaves the unchanged lines drawn');
-    assert.equal(await page.locator(`${diffHost} .diff-hidden-lines-widget`).count(), 0, 'the read folds nothing away either');
+    assert.equal(await page.locator(`${diffHost} .cm-collapsedLines`).count(), 0, 'the read folds nothing away either');
   }));
 test('The diff steps through its changes with ]c, [c and the toolbar buttons', { timeout: caseTimeout }, () => withGitApp('wangcai-git-jump',
   gitLists,
@@ -660,8 +658,9 @@ test('The rail answers hjkl, hands the keys to the diff, and the diff answers th
     // The file opened with the keys takes the focus, which is what makes the motions below the diff's own.
     assert.ok(await inDiff(page), 'opening a file with l hands the focus to its diff');
     // The carets the diff draws, whose style the editor sets from its own options.
-    const carets = page.locator(`${diffHost} ${diffSide} .cursors-layer`);
-    assert.match(await carets.getAttribute('class'), /\bcursor-block-style\b/, 'the diff holds its caret as a block, the way vim draws one');
+    // The caret the diff draws is the block vim reads, wider than a plain text caret.
+    const carets = page.locator(`${diffHost} ${diffSide} .cm-cursor-primary`);
+    assert.ok(await carets.evaluate((element) => parseFloat(getComputedStyle(element).width) > 2), 'the diff holds its caret as a block, the way vim draws one');
     // The two panes hand the keys back and forth along the row they sit in, on the keys the page claims from the core.
     await toRail(page);
     assert.equal(await heldKey(page), 'change:unstaged:keys.ts', 'Ctrl+Shift+h returns the keys to the row the rail left them on');
@@ -800,8 +799,8 @@ test('A shown page returns the keys to the view that held them last', { timeout:
     await until(inRail);
     assert.equal(await heldKey(page), held);
   }));
-// Auto reading falls back to the inline view while the pane is narrow, and Monaco leaves the original's wrap off once
-// the pane widens again; both sides must wrap alike whenever the diff draws side by side.
+// Auto reading falls back to the inline view while the pane is narrow; both sides must wrap alike whenever the diff
+// draws side by side.
 test('A diff widened out of the inline view wraps both sides alike', { timeout: caseTimeout }, () => withGitApp('wangcai-git-wrap',
   gitLists,
   async ({ home, env, page, desktop }) => {
@@ -821,18 +820,23 @@ test('A diff widened out of the inline view wraps both sides alike', { timeout: 
     const divider = page.getByRole('separator', { name: '调整右侧栏宽度' });
     await divider.focus();
     const step = async (key, times) => { for (let i = 0; i < times; i += 1) await page.keyboard.press(key); };
-    const lineCounts = () => page.evaluate(([host, original, modified, eachLine]) => {
-      const root = document.querySelector(host).shadowRoot;
-      return [original, modified].map((side) => root.querySelector(side).querySelectorAll(eachLine).length);
+    // A wrapped line stays one element that grows taller, so both sides wrap alike when the long line stands at the
+    // same height on each, well above the height of one unwrapped line.
+    const lineHeights = () => page.evaluate(([host, original, modified, eachLine]) => {
+      const root = document.querySelector(host);
+      return [original, modified].map((side) => {
+        const line = [...root.querySelectorAll(`${side} ${eachLine}`)].find((node) => node.textContent.includes('const value'));
+        return line ? line.getBoundingClientRect().height : 0;
+      });
     }, [diffHost, diffOriginal, diffSide, eachLine]);
-    const wrapsAlike = async () => { const [left, right] = await lineCounts(); return right > 1 && left === right; };
+    const wrapsAlike = async () => { const [left, right] = await lineHeights(); return right > 30 && Math.abs(left - right) < 2; };
     await step('ArrowLeft', 25);
-    await diffEditor(page, '.side-by-side').waitFor();
+    await diffSplit(page).waitFor();
     await until(wrapsAlike);
     await step('ArrowRight', 25);
-    await diffEditor(page, ':not(.side-by-side)').waitFor();
+    await diffInline(page).waitFor();
     await step('ArrowLeft', 25);
-    await diffEditor(page, '.side-by-side').waitFor();
+    await diffSplit(page).waitFor();
     await until(wrapsAlike);
   }));
 
@@ -850,7 +854,7 @@ test('A CSS diff reads the palette the editor reads', { timeout: caseTimeout }, 
     await modifiedLines(page).filter({ hasText: 'border-left' }).waitFor();
     const hues = await themeHues(page, ['--wc-cyan', '--wc-foreground', '--wc-yellow', '--wc-magenta', '--wc-blue', '--wc-muted']);
     const expect = {
-      '.box': hues['--wc-cyan'].rgb,
+      box: hues['--wc-cyan'].rgb,
       'border-left': hues['--wc-foreground'].rgb,
       '2': hues['--wc-yellow'].rgb,
       px: hues['--wc-magenta'].rgb,
@@ -858,20 +862,26 @@ test('A CSS diff reads the palette the editor reads', { timeout: caseTimeout }, 
       red: hues['--wc-blue'].rgb,
       '/* note */': hues['--wc-muted'].rgb,
     };
-    // Monaco tokenizes after it draws, and until then a line is one class-less span wrapping the text: only a span carrying
-    // a token class has a hue of its own to read. Its spaces are non-breaking ones, so a key spelled with plain spaces is
-    // matched against text whose whitespace is normalised.
+    // A changed word sits in a tint span of its own around the token span, so the hue is the innermost span that carries
+    // the key; a token the palette leaves unstyled is bare text, read in the line's own colour. The dot of a class
+    // selector is punctuation the grammar spells apart from the name, so the name alone is matched.
     const readHues = () => page.evaluate(([host, side, line, keys]) => {
-      const spans = [...document.querySelector(host).shadowRoot.querySelectorAll(`${side} ${line} span`)].filter((span) => span.className);
+      const root = document.querySelector(host);
+      const spans = [...root.querySelectorAll(`${side} ${line} span`)].filter((span) => span.className);
+      const lines = [...root.querySelectorAll(`${side} ${line}`)];
       return Object.fromEntries(keys.flatMap((key) => {
-        const span = spans.find((item) => item.textContent.replace(/\s+/g, ' ').includes(key));
-        return span ? [[key, getComputedStyle(span).color]] : [];
+        const matches = spans.filter((item) => item.textContent.replace(/\s+/g, ' ').includes(key));
+        const span = matches.find((item) => !matches.some((other) => other !== item && item.contains(other)));
+        if (span) return [[key, getComputedStyle(span).color]];
+        const plain = lines.find((node) => node.textContent.includes(key));
+        return plain ? [[key, getComputedStyle(plain).color]] : [];
       }));
     }, [diffHost, diffSide, eachLine, Object.keys(expect)]);
     await until(async () => isDeepStrictEqual(await readHues(), expect));
   }));
 
-// The diff Monaco draws is its own theme, not the --wc-* tokens the rail around it reads, so a switch has to reach it.
+// The diff reads its colours from the theme's own extensions, not the --wc-* tokens the rail around it reads, so a
+// switch has to reach the views already on screen.
 test('A switch of theme recolours the diff already on screen', { timeout: caseTimeout }, () => withGitApp('wangcai-git-theme',
   gitLists,
   async ({ home, env, page }) => {
@@ -884,11 +894,11 @@ test('A switch of theme recolours the diff already on screen', { timeout: caseTi
     await sectionFiles(page, '未暂存').first().click();
     await modifiedLines(page).filter({ hasText: 'answer' }).waitFor();
 
-    // What the diff is painted in, read inside the shadow root Monaco lives in. editor.background comes from
-    // --wc-background and a comment from --wc-muted, so the palette in force says what these should be.
-    const painted = () => page.evaluate(([host, side, line, editor]) => {
-      const root = document.querySelector(host).shadowRoot;
-      const pane = root.querySelector(editor);
+    // What the diff is painted in: the editor background comes from --wc-background and a comment from --wc-muted, so
+    // the palette in force says what these should be.
+    const painted = () => page.evaluate(([host, side, line]) => {
+      const root = document.querySelector(host);
+      const pane = root.querySelector('.cm-editor');
       const span = [...root.querySelectorAll(`${side} ${line} span`)]
         .find((node) => node.className && node.textContent.includes('note'));
       return {
@@ -896,7 +906,7 @@ test('A switch of theme recolours the diff already on screen', { timeout: caseTi
         comment: span ? getComputedStyle(span).color : '',
         scheme: document.documentElement.style.colorScheme,
       };
-    }, [diffHost, diffSide, eachLine, monacoEditor]);
+    }, [diffHost, diffSide, eachLine]);
     const settled = async () => {
       const now = await painted();
       const hues = await themeHues(page, ['--wc-background', '--wc-muted']);
