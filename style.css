@@ -12,8 +12,6 @@
 .git-icon { flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 26px; height: 24px; border-radius: 6px; }
 .git-icon[aria-pressed=true] { color: var(--wc-accent); }
 .git-icon svg { fill: none; stroke: currentColor; stroke-width: 1.2; }
-.git-icon-auto, .git-icon-split, .git-icon-inline { display: none; }
-.git-page[data-reading=auto] .git-icon-auto, .git-page[data-reading=split] .git-icon-split, .git-page[data-reading=inline] .git-icon-inline { display: block; }
 .git-body { --divider-width: 6px; position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .git-rail-wrap { display: flex; flex: 0 0 calc(var(--rail-width) + var(--divider-width)); min-width: 0; }
 .git-rail { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: auto; padding: 4px 0 8px; }
@@ -57,15 +55,6 @@
 .git-tip .mono { font-family: monospace; }
 .git-commit-files { padding-bottom: 4px; }
 .git-board { flex: 1; min-width: 0; display: flex; padding: 8px 8px 8px 0; overflow-x: auto; }
-.git-pane { flex: 1; min-width: 320px; display: flex; flex-direction: column; border: 1px solid var(--wc-border); border-radius: 8px; overflow: hidden; }
-.git-editor { flex: 1; min-height: 0; }
-/* The split diff scrolls as one box around its two editors, which the merge view leaves unscrollable themselves. */
-.git-editor .cm-mergeView { height: 100%; overflow: auto; scrollbar-width: thin; scrollbar-color: transparent transparent; }
-.git-editor .cm-mergeView:hover { scrollbar-color: color-mix(in srgb, var(--wc-foreground) 20%, transparent) transparent; }
-.git-menu { position: fixed; z-index: 5; min-width: 132px; padding: 4px; border: 1px solid var(--wc-border); border-radius: 6px; background: var(--wc-background); box-shadow: 0 12px 28px #0007; }
-.git-menu button { display: block; width: 100%; height: 24px; padding: 0 8px; border-radius: 4px; text-align: left; }
-.git-menu button:hover { background: var(--wc-selection); }
 .git-note { padding: 12px; color: var(--wc-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .git-note[role=alert] { color: var(--wc-red); }
 .git-board > .git-note { align-self: flex-start; max-width: 100%; }
-.git-note button { display: block; margin-top: 8px; padding: 2px 12px; border: 1px solid var(--wc-border); border-radius: 4px; color: var(--wc-accent); }

@@ -1,31 +1,21 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { CSSProperties, RefObject, UIEvent } from 'react';
+import type { CSSProperties, UIEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ChangeSet, Compartment, EditorState } from '@codemirror/state';
-import { EditorView, drawSelection, highlightActiveLine, lineNumbers } from '@codemirror/view';
-import { MergeView, getChunks, getOriginalDoc, goToNextChunk, goToPreviousChunk, originalDocChangeEffect, unifiedMergeView } from '@codemirror/merge';
-import { Vim, getCM, vim, type CodeMirrorV } from '@replit/codemirror-vim';
-import { editorTheme } from './theme';
-import { modeFor } from './mode';
-import type { FileClick, Theme, WorkspaceActive } from '@lengmoxxl/sdk';
+import type { FileClick, WorkspaceActive } from '@lengmoxxl/sdk';
 import type { TabRecord, UiContext } from '@lengmoxxl/sdk/channel';
 import { bindKeys, pressIn } from '@lengmoxxl/sdk/keys';
-import type { Commit, Comparison, Diff, Font, GitFile, History, Overview, Settings, Stage } from './shared';
+import type { Commit, Comparison, Font, GitFile, History, Overview, Settings, Stage } from './shared';
 import './style.css';
 
 export const title = 'Git';
 let font: Font;
-let theme: Theme;
-let bus: UiContext['global'];
 let activeWorkspaceId: string | undefined;
 const stages: Record<Stage, string> = { conflicted: '冲突', staged: '已暂存', unstaged: '未暂存', untracked: '未跟踪' };
-const readingOrder = ['auto', 'split', 'inline'] as const;
-type Reading = typeof readingOrder[number];
-const readings: Record<Reading, string> = { auto: '自动', split: '双栏', inline: '单栏' };
+
 // The page's layout is a habit of the reader rather than of a repository, so one store holds it for every workspace: a
-// width, a reading mode or a folded section changed in one Git tab is drawn by the others as well, and outlives them.
-type PageLayout = { reading: Reading; wrap: boolean; railShown: boolean; railWidth: number; folded: Stage[] };
-const layoutDefaults: PageLayout = { reading: 'auto', wrap: true, railShown: true, railWidth: 260, folded: [] };
+// width or a folded section changed in one Git tab is drawn by the others as well, and outlives them.
+type PageLayout = { railShown: boolean; railWidth: number; folded: Stage[] };
+const layoutDefaults: PageLayout = { railShown: true, railWidth: 260, folded: [] };
 const layoutKey = 'git-layout';
 const layoutListeners = new Set<() => void>();
 let layoutHeld: PageLayout | undefined;
@@ -50,231 +40,21 @@ const rowKey = {
 // The mark a row draws while the keys hold it: an empty value the walk reads back off the page.
 const mark = (cursor: string, row: string) => cursor === row ? '' : undefined;
 
-
-// Where the caret sits in the diff: the line and column the toolbar hands the file it opens, and the point the editor
-// puts it back at when a note gives way to the diff again.
-type Caret = { line: number; column: number };
-
-// How a press reaches the diff: a comparison the pane already shows hands the keys to the editor it holds, and any other
-// arrives as `take`, which the pane mounting for it spends. Both end in `enter`, which is what Ctrl+Shift+l calls.
-type Keys = { take?: Comparison; enter?: () => void };
-type Jump = { next: () => void; previous: () => void };
-
-// The view behind the vim adapter: `cm6` is the field it carries the CodeMirror view in, which its own types do not say.
-const viewOf = (cm: unknown) => (cm as { cm6?: EditorView }).cm6;
-
-// ]c and [c walk the changes the way vim's diff mode does, defined once for the window since the vim layer is one state
-// shared by every view; a count walks that many, and the walk wraps round the ends as the toolbar's buttons do.
-for (const [keys, walk] of [[']c', goToNextChunk], ['[c', goToPreviousChunk]] as [string, typeof goToNextChunk][]) {
-  const name = `wangcai-git-${keys === ']c' ? 'next' : 'previous'}-change`;
-  Vim.defineAction(name, (cm, args) => {
-    const view = viewOf(cm);
-    if (view) for (let at = 0; at < (args.repeat || 1); at += 1) walk(view);
-  });
-  Vim.mapCommand(keys, 'action', name, {}, { context: 'normal' });
-}
-
-function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: {
-  diff: Diff; path: string; reading: Reading; wrap: boolean; caret: RefObject<Caret | undefined>;
-  keys: RefObject<Keys>; jumps: RefObject<Jump | undefined>; changes: (count: number) => void;
-}) {
-  const element = useRef<HTMLDivElement>(null);
-  const held = useRef<{ side: EditorView; write: (oldText: string, newText: string) => void; count: () => number; rewrap: (on: boolean) => void; reveal: () => void; destroy: () => void; now: (state?: EditorState) => { line: number; column: number }; seat: (line: number, column: number) => number }>(undefined);
-  // Auto reading draws the inline view while the pane is narrow, the same 900px breakpoint the diff drew with before.
-  const [narrow, setNarrow] = useState(false);
-  const unified = reading === 'inline' || (reading === 'auto' && narrow);
-  const keptScroll = useRef(0);
-  const keptFocus = useRef(false);
-  useEffect(() => {
-    const host = element.current!;
-    const sized = new ResizeObserver(() => setNarrow(host.clientWidth < 900));
-    sized.observe(host);
-    return () => sized.disconnect();
-  }, []);
-  useEffect(() => {
-    const host = element.current!;
-    const colours = new Compartment();
-    const wrapping = new Compartment();
-    const common = [
-      colours.of(editorTheme(theme, font)),
-      wrapping.of(wrap ? EditorView.lineWrapping : []),
-      lineNumbers(), drawSelection(), highlightActiveLine(), vim(), EditorState.readOnly.of(true), modeFor(path),
-      EditorView.updateListener.of((update) => {
-        if (update.selectionSet) caret.current = now(update.state);
-      }),
-    ];
-    // The smallest edit that turns one text into the other, so a read only rewrites the span that changed.
-    const edit = (before: string, text: string) => {
-      if (before === text) return undefined;
-      const shortest = Math.min(before.length, text.length);
-      let head = 0;
-      while (head < shortest && before[head] === text[head]) head++;
-      let tail = 0;
-      while (tail < shortest - head && before[before.length - 1 - tail] === text[text.length - 1 - tail]) tail++;
-      return { from: head, to: before.length - tail, insert: text.slice(head, text.length - tail) };
-    };
-    let side: EditorView, scroller: HTMLElement, views: EditorView[], count: () => number,
-      write: (oldText: string, newText: string) => void, destroy: () => void;
-    if (unified) {
-      const view = new EditorView({
-        state: EditorState.create({ doc: diff.newText, extensions: [...common, unifiedMergeView({ original: diff.oldText, mergeControls: false, gutter: false })] }),
-        parent: host,
-      });
-      side = view; scroller = view.scrollDOM; views = [view];
-      count = () => getChunks(view.state)?.chunks.length ?? 0;
-      write = (oldText, newText) => {
-        const after = edit(view.state.doc.toString(), newText);
-        const original = getOriginalDoc(view.state).toString();
-        const before = edit(original, oldText);
-        if (!after && !before) return;
-        view.dispatch({ changes: after, effects: before ? originalDocChangeEffect(view.state, ChangeSet.of(before, original.length)) : [] });
-      };
-      destroy = () => view.destroy();
-    } else {
-      const view = new MergeView({
-        a: { doc: diff.oldText, extensions: common },
-        b: { doc: diff.newText, extensions: common },
-        parent: host, gutter: false,
-      });
-      side = view.b; scroller = view.dom; views = [view.a, view.b];
-      count = () => view.chunks.length;
-      write = (oldText, newText) => {
-        const before = edit(view.a.state.doc.toString(), oldText);
-        const after = edit(view.b.state.doc.toString(), newText);
-        if (before) view.a.dispatch({ changes: before });
-        if (after) view.b.dispatch({ changes: after });
-      };
-      destroy = () => view.destroy();
-    }
-    const rewrap = (on: boolean) => { for (const view of views) view.dispatch({ effects: wrapping.reconfigure(on ? EditorView.lineWrapping : []) }); };
-    const offTheme = bus.subscribe<Theme>('theme', (next) => { for (const view of views) view.dispatch({ effects: colours.reconfigure(editorTheme(next, font)) }); });
-    scroller.scrollTop = keptScroll.current;
-    const seat = (line: number, column: number) => {
-      const at = side.state.doc.line(Math.min(side.state.doc.lines, Math.max(1, line)));
-      return Math.min(at.to, at.from + Math.max(0, column - 1));
-    };
-    const now = (state: EditorState = side.state) => {
-      const head = state.selection.main.head;
-      const line = state.doc.lineAt(head);
-      return { line: line.number, column: head - line.from + 1 };
-    };
-    // The caret is revealed at the centre only when the scroll no longer shows it.
-    const reveal = () => {
-      const head = side.state.selection.main.head;
-      const coords = side.coordsAtPos(head);
-      const box = scroller.getBoundingClientRect();
-      if (!coords || coords.top < box.top || coords.bottom > box.bottom) side.dispatch({ effects: EditorView.scrollIntoView(head, { y: 'center' }) });
-    };
-    if (caret.current) {
-      const at = seat(caret.current.line, caret.current.column);
-      side.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: 'center' }) });
-    }
-    jumps.current = { next: () => { goToNextChunk(side); }, previous: () => { goToPreviousChunk(side); } };
-    changes(count());
-    // A press that leaves the diff hands the keys to the rail, and an insert mode still open would be open again when
-    // the keys come back, so it is ended on the way out as the editor ends one.
-    const leaveInsert = (event: FocusEvent) => {
-      if (event.relatedTarget instanceof Node && host.contains(event.relatedTarget)) return;
-      const cm = getCM(side);
-      if (cm) Vim.exitInsertMode(cm as CodeMirrorV, true);
-    };
-    host.addEventListener('focusout', leaveInsert);
-    keys.current.enter = () => side.focus();
-    // A rebuild into the other reading mode must not drop the focus the keys were just handed.
-    if (keptFocus.current) side.focus();
-    held.current = { side, write, count, rewrap, reveal, destroy, now, seat };
-    return () => {
-      keptScroll.current = scroller.scrollTop;
-      keptFocus.current = side.hasFocus;
-      keys.current.enter = undefined; jumps.current = undefined;
-      host.removeEventListener('focusout', leaveInsert); offTheme();
-      destroy(); held.current = undefined;
-    };
-  }, [path, unified]);
-  // A read of the file the pane already shows rewrites the sides where they stand: only the span that changed is edited,
-  // so the caret and the scroll it was left at survive unless that scroll no longer shows the caret.
-  useEffect(() => {
-    const pane = held.current;
-    if (!pane) return;
-    const at = pane.now();
-    pane.write(diff.oldText, diff.newText);
-    // A read that rewrites the span the caret sits in maps it to the edit's edge, so it is seated back where it was.
-    const pos = pane.seat(at.line, at.column);
-    if (pane.side.state.selection.main.head !== pos) pane.side.dispatch({ selection: { anchor: pos } });
-    changes(pane.count());
-    pane.reveal();
-  }, [diff]);
-  useEffect(() => { held.current?.rewrap(wrap); }, [wrap]);
-  return <div className="git-editor" ref={element} />;
-}
-
-const watch = (context: UiContext, terminal: WorkspaceActive, holder: string, paths: string[], act: () => void) => {
-  // The plugin can be disposed before either request lands, and the machine can be gone; neither is worth a pageerror.
-  void context.ui.request('watch', { holder, machine: terminal.machine, paths }).catch(() => undefined);
-  const off = context.ui.subscribe<string>('changed', (path) => { if (paths.includes(path)) act(); });
-  return () => { off(); void context.ui.request('watch', { holder, machine: terminal.machine, paths: [] }).catch(() => undefined); };
-};
-
 // A repository root and a path inside it, as the machine's absolute path: '/' is the one root that adds nothing.
 const absolute = (root: string, path: string) => `${root === '/' ? '' : root}/${path}`;
 
-// What tells one diff pane from another: a comparison drawn again is the same pane, so it keeps its editor.
-const paneKey = (comparison: Comparison) => JSON.stringify(comparison);
-
-// What a pane reads its diff from, as the repository names it: a change carries the blobs of the two sides its own
-// diff reads, and the worktree side is the file the pane watches. Two things it cannot name: a file the list does not
-// hold, and a file a truncated list cut off, for which the key is the number of reads the page has applied.
-const sides = (comparison: Comparison, overview: Overview, appliedReads: number) => {
-  // A commit names its content by its id alone.
-  if (comparison.source === 'commit') return 'commit';
-  const change = overview.changes.find(file => file.stage === comparison.source && file.path === comparison.path);
-  if (change) return [change.status, change.oldPath, change.headBlob, change.indexBlob].join('\0');
-  return overview.truncated ? `cut\0${appliedReads}` : 'gone';
+// The comparison as the resource the editor reads: git://<path>@<base>~<head>, the two sides named by revision or by
+// the index/worktree tokens, with the old name a rename gives carried for the old side.
+const comparisonUri = (root: string, comparison: Comparison): string => {
+  const path = absolute(root, comparison.path);
+  const old = comparison.oldPath ? `?old=${absolute(root, comparison.oldPath)}` : '';
+  const pair = comparison.source === 'commit' ? `${comparison.rev}^~${comparison.rev}`
+    : comparison.source === 'staged' ? 'HEAD~:index'
+    : comparison.source === 'untracked' ? ':empty~:worktree'
+    : comparison.source === 'conflicted' ? ':ours~:worktree'
+    : `:index~${comparison.status === 'D' ? ':empty' : ':worktree'}`;
+  return `git://${path}@${pair}${old}`;
 };
-
-function DiffPane({ context, terminal, holder, root, comparison, reading, wrap, source, caret, keys, jumps, changes }: {
-  context: UiContext; terminal: WorkspaceActive; holder: string; root: string; comparison: Comparison; reading: Reading; wrap: boolean; source: string; caret: RefObject<Caret | undefined>; keys: RefObject<Keys>; jumps: RefObject<Jump | undefined>; changes: (count: number) => void;
-}) {
-  const [diff, setDiff] = useState<Diff>();
-  const [error, setError] = useState('');
-  const forced = useRef(false);
-  // The pane reads what it shows when it opens, and again when the sides it compares are not the ones it holds, or
-  // where a truncated list cut its file off so that no read can name those sides, whenever the page applies a read.
-  // Otherwise a change elsewhere in the repository leaves the pane as it is.
-  const read = () => {
-    void context.ui.request<Diff>('diff', { terminal, root, comparison, force: forced.current }).then(value => {
-      setError('');
-      // A read that finds what the pane already holds leaves it as it is, so a poll of an unchanged file draws nothing.
-      setDiff(previous => previous && previous.oldText === value.oldText && previous.newText === value.newText
-        && previous.notice === value.notice && previous.tooLarge === value.tooLarge ? previous : value);
-    }).catch((problem: Error) => setError(problem.message));
-  };
-  useEffect(read, [context, terminal, root, comparison, source]);
-  // Writing the file changes what the pane holds while the repository stays as it is, so that file is watched: what a
-  // commit or the index holds is not the machine's file, and a deleted file has nothing to watch. A watch that cannot
-  // be registered leaves that side to the reads the whole page asks for.
-  useEffect(() => {
-    const inWorktree = ['unstaged', 'untracked', 'conflicted'].includes(comparison.source) && comparison.status !== 'D';
-    return inWorktree ? watch(context, terminal, holder, [absolute(root, comparison.path)], read) : undefined;
-  }, [context, terminal, holder, root, comparison]);
-  // The keys a press leaves name the comparison this pane mounts for, and the pane spends them once it settles: the
-  // editor that mounted takes them, and a file with only a note or a failed read has none to take.
-  useEffect(() => {
-    if (keys.current.take !== comparison || (!error && !diff)) return;
-    keys.current.take = undefined;
-    keys.current.enter?.();
-  }, [keys, comparison, error, diff]);
-  if (error) return <div className="git-note" role="alert">{error}</div>;
-  if (!diff) return <div className="git-note">正在读取 diff…</div>;
-  if (diff.tooLarge !== undefined) return (
-    <div className="git-note">
-      <div>文件较大（{(diff.tooLarge / 1024 / 1024).toFixed(1)} MiB），加载可能卡顿。</div>
-      <button onClick={() => { forced.current = true; read(); }}>仍要加载</button>
-    </div>
-  );
-  if (diff.notice) return <div className="git-note">{diff.notice}</div>;
-  return <DiffEditor diff={diff} path={comparison.path} reading={reading} wrap={wrap} caret={caret} keys={keys} jumps={jumps} changes={changes} />;
-}
 
 function FileRow({ file, row, cursor, select }: { file: GitFile; row: string; cursor: string; select: () => void }) {
   const cut = file.path.lastIndexOf('/');
@@ -336,31 +116,19 @@ function CommitRow({ commit, context, terminal, root, selected, cursor, toggle, 
 // How long an open page waits between two reads of the repository, when `autoRefresh` is on.
 const pollMilliseconds = 3000;
 
-function Repository({ context, terminal, holder, activation, autoRefresh }: { context: UiContext; terminal: WorkspaceActive; holder: string; activation: number; autoRefresh: boolean }) {
+function Repository({ context, terminal, activation, autoRefresh }: { context: UiContext; terminal: WorkspaceActive; activation: number; autoRefresh: boolean }) {
   const [overview, setOverview] = useState<Overview>();
   const [error, setError] = useState('');
   const [toolbarRead, setToolbarRead] = useState(0);
-  const [pageReads, setPageReads] = useState(0);
-  const [appliedReads, setAppliedReads] = useState(0);
   const [loading, setLoading] = useState(false);
   const [opened, setOpened] = useState<string | null>(null);
-  const [comparison, setComparison] = useState<Comparison>();
-  const { reading, wrap, railShown, railWidth, folded } = useSyncExternalStore(watchLayout, readLayout);
+  const { railShown, railWidth, folded } = useSyncExternalStore(watchLayout, readLayout);
   // Whether the keys slid the hidden list out, as the pointer does: the slide goes away with the file it chose.
   const [railPeek, setRailPeek] = useState(false);
-  const [menu, setMenu] = useState<{ x: number; y: number }>();
   // The row the rail's keys hold, named by the row's own key, so a read that redraws the list leaves it on that row.
   const [cursor, setCursor] = useState('');
   const body = useRef<HTMLDivElement>(null);
   const drag = useRef<{ origin: number; width: number }>(undefined);
-  const caret = useRef<Caret>(undefined);
-  const keys = useRef<Keys>({});
-  const diffHeld = useRef(false);
-  const jumps = useRef<Jump>(undefined);
-  const [blocks, setBlocks] = useState(0);
-  // Set while a press opens a file: it makes that choice the one the keys wait for, and it is what tells a press on the
-  // diff the pane already shows apart from a click on the same row.
-  const pressing = useRef(false);
   const railMinimum = 180;
   const railMaximum = Math.round((body.current?.clientWidth ?? 0) * 0.7);
   const clampWidth = (requested: number) => Math.round(Math.max(railMinimum, Math.min(railMaximum, requested)));
@@ -383,19 +151,15 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         const text = JSON.stringify(value);
         if (!forced && text === lastRead.current) return;
         lastRead.current = text;
-        if (repositoryRoot.current !== value.root) { setComparison(undefined); setOpened(value.commits[0]?.sha ?? null); }
+        if (repositoryRoot.current !== value.root) setOpened(value.commits[0]?.sha ?? null);
         repositoryRoot.current = value.root;
         setOverview(value);
-        // A change the list no longer holds has nothing left to compare, so the pane that showed it closes instead of
-        // reading a diff of a change the repository no longer has; a truncated list cannot say whether its file left.
-        setComparison(previous => previous && sides(previous, value, appliedReads) === 'gone' ? undefined : previous);
-        setAppliedReads(count => count + 1);
         setError('');
       }).catch((error: Error) => {
         if (current !== generation.current) return;
         // A read that failed has nothing to compare against, so the page is drawn again by the read that works.
         lastRead.current = '';
-        setOverview(undefined); setComparison(undefined); setError(error.message);
+        setOverview(undefined); setError(error.message);
       })
         .finally(() => {
           busy.current = false;
@@ -403,19 +167,9 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
         });
     };
     read(true);
-    // A read of the whole page, the button's or the tab's, reads what the pane shows again as well.
-    setPageReads(count => count + 1);
     const timer = autoRefresh ? setInterval(() => read(false), pollMilliseconds) : undefined;
     return () => { clearInterval(timer); generation.current++; };
   }, [context, terminal, toolbarRead, activation, autoRefresh]);
-  useEffect(() => {
-    if (!menu) return;
-    const dismiss = (event: MouseEvent) => { if (!(event.target as HTMLElement).closest('.git-menu')) setMenu(undefined); };
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setMenu(undefined); };
-    window.addEventListener('mousedown', dismiss);
-    window.addEventListener('keydown', escape);
-    return () => { window.removeEventListener('mousedown', dismiss); window.removeEventListener('keydown', escape); };
-  }, [menu]);
   const loadOlder = () => {
     if (!overview?.hasMore || loading || paging.current) return;
     const current = generation.current;
@@ -437,8 +191,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
       const closed = row.closest('details:not([open])');
       return !closed || row === summaryOf(closed);
     });
-  // The row the keys hold takes the focus with the cursor, so a press that folds a section or leaves the diff lands on
-  // something the keys read.
+  // The row the keys hold takes the focus with the cursor, so a press that folds a section lands on something the keys read.
   const occupy = (row: HTMLElement) => { setCursor(row.dataset.row!); row.focus({ preventScroll: true }); row.scrollIntoView({ block: 'nearest' }); };
   const isHeld = (row: HTMLElement) => row.hasAttribute('data-cursor');
   const heldRow = () => rows().find(isHeld);
@@ -457,33 +210,14 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     const stage = details.dataset.stage as Stage;
     writeLayout({ folded: closed ? (folded.includes(stage) ? folded : [...folded, stage]) : folded.filter((one) => one !== stage) });
   };
-  // Choosing a file from the rail: the pane it opens, and the keys the choice hands over.
-  // A file chosen out of the keys' own slide closes it, so the diff shows the board the reader left.
+  // Choosing a file from the rail opens its comparison in the editor, which is the view that reads a diff now.
   const show = (next: Comparison) => {
+    if (!overview) return;
     setRailPeek(false);
-    const fromPress = pressing.current;
-    pressing.current = false;
-    // The pane mounts per comparison, so a file it already shows settles nowhere and no render would spend the keys: a
-    // press hands them to the editor it holds. That press still seats the row it was made on, so the hand-off waits for
-    // it to finish, or the row would take the focus back; a click on the row hands nothing over.
-    if (comparison && paneKey(comparison) === paneKey(next)) {
-      if (fromPress) queueMicrotask(() => keys.current.enter?.());
-      return;
-    }
-    // A caret belongs to the diff that holds it, so another file forgets the one the last file was left at.
-    caret.current = undefined;
-    setBlocks(0);
-    if (fromPress) keys.current.take = next;
-    setComparison(next);
+    void context.global.publish('onclick', { type: 'file', machine: terminal.machine, path: comparisonUri(overview.root, next) } satisfies FileClick);
+    void context.global.publish('core:show-view', { plugin: 'editor' });
   };
-  const into = () => {
-    const row = heldRow();
-    if (!row) return;
-    // The press is the row's own: it toggles a section or a commit's files, and a file's diff opens with the keys, which
-    // `pressing` marks as this press's own.
-    if (row.classList.contains('git-file')) pressing.current = true;
-    row.click();
-  };
+  const into = () => { heldRow()?.click(); };
   const out = () => {
     const row = heldRow();
     if (!row) return;
@@ -496,7 +230,7 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     }
     const list = row.closest<HTMLElement>('.git-commit-files');
     const commit = list && rows().find((one) => one.dataset.row === list.dataset.commit);
-    if (commit) commit.click();
+    if (commit) { commit.click(); occupy(commit); }
     else if (row.getAttribute('aria-expanded') === 'true') row.click();
   };
   // The row the keys land on when they come back to the list: the one they were on, or the list's top.
@@ -504,62 +238,30 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
     const row = heldRow() ?? rows()[0];
     if (row) occupy(row);
   };
-  // The diff hands the keys back to the list. One the toolbar hid slides out over the board the way the pointer brings
-  // it, and its row is seated once the page has drawn that slide; choosing a file takes the slide away again.
   const leaveDiff = () => {
     if (!railShown && !railPeek) return setRailPeek(true);
     seatRow();
   };
   useEffect(() => { if (railPeek) seatRow(); }, [railPeek]);
-  // The file the toolbar opens and `<leader>gf` opens: the click a view of its own then shows, at the caret it shows it at.
-  const openFile = () => {
-    if (!overview || !comparison || comparison.status === 'D') return;
-    void context.global.publish('onclick', {
-      type: 'file', machine: terminal.machine,
-      path: absolute(overview.root, comparison.path),
-      line: caret.current?.line, column: caret.current?.column,
-    } satisfies FileClick).catch((error: Error) => setError(error.message));
-  };
   const shown = () => Boolean(body.current?.checkVisibility());
-  // The window matches the leader before any page hears it, so the key arrives as an event: every mounted tab is told,
-  // and the one on show is the one that answers.
-  useEffect(() => context.global.subscribe('git:open-file', () => { if (shown()) openFile(); }),
-    [context, terminal, overview, comparison]);
-  // The keys go to the pane the press names: the rail hands them to the diff, and the diff hands them back. A page that
-  // is not on show leaves the press alone, since the tabs of other workspaces hear it too; the press reads the two
-  // states the list is drawn by, so a press after a toggle sees them as they now are.
+  // Ctrl+Shift+l opens the held row's comparison in the editor; Ctrl+Shift+h lands the keys back on the list.
   useEffect(() => {
     const backToRail = context.global.subscribe('git:focus-rail', () => { if (shown()) leaveDiff(); });
-    const intoDiff = context.global.subscribe('git:focus-diff', () => { if (!shown()) return; setRailPeek(false); keys.current.enter?.(); });
+    const intoDiff = context.global.subscribe('git:focus-diff', () => { if (shown()) into(); });
     return () => { backToRail(); intoDiff(); };
   }, [context, railShown, railPeek]);
-  // The rail answers the keys the way a vim list does. The diff and the width handle read their own keys, so a press made
-  // in either is not a press for the rail.
+  // The rail answers the keys the way a vim list does. The width handle reads its own keys, so a press made in it is
+  // not a press for the rail.
   useEffect(() => {
     const panel = body.current?.closest<HTMLElement>('.sidebar-panel');
     if (!panel) return;
-    const down = () => step(1);
-    const up = () => step(-1);
-    // The view the focus lands in is the one a shown page hands the keys back to; the diff's editor retargets its
-    // focus to its host across the shadow boundary, the rail's rows answer for themselves.
-    const held = (event: FocusEvent) => {
-      const target = event.target as HTMLElement;
-      if (target.closest('.git-editor')) diffHeld.current = true;
-      else if (target.closest('.git-rail')) diffHeld.current = false;
-    };
-    panel.addEventListener('focusin', held);
-    // The window hands this page its keys when its tab comes to the front, by the core's walk or a click on the tab;
-    // they return to the view that held them last, and to the rail when neither has.
-    const regain = () => {
-      if (diffHeld.current && keys.current.enter) { setRailPeek(false); keys.current.enter(); }
-      else leaveDiff();
-    };
+    const regain = () => seatRow();
     panel.addEventListener('wangcai:shown', regain);
     const unbind = bindKeys(panel, [
-      { keys: 'j', run: down },
-      { keys: '<Down>', run: down },
-      { keys: 'k', run: up },
-      { keys: '<Up>', run: up },
+      { keys: 'j', run: () => step(1) },
+      { keys: '<Down>', run: () => step(1) },
+      { keys: 'k', run: () => step(-1) },
+      { keys: '<Up>', run: () => step(-1) },
       { keys: 'G', run: () => jump('last') },
       { keys: 'gg', run: () => jump('first') },
       { keys: 'l', run: into },
@@ -568,38 +270,17 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
       { keys: 'h', run: out },
       { keys: '<Left>', run: out },
     ], {
-      ignore: (event) => pressIn(event, '.git-editor, .git-divider'),
+      ignore: (event) => pressIn(event, '.git-divider'),
     });
-    return () => { panel.removeEventListener('wangcai:shown', regain); panel.removeEventListener('focusin', held); unbind(); };
+    return () => { panel.removeEventListener('wangcai:shown', regain); unbind(); };
   });
-  return <section className="git-page" aria-label="Git history" data-reading={reading}>
+  return <section className="git-page" aria-label="Git history">
     <header className="git-toolbar">
       <span className="git-branch" title={overview?.upstream}>{overview?.branch}
         {overview?.ahead ? <b> ↑{overview.ahead}</b> : null}{overview?.behind ? <i> ↓{overview.behind}</i> : null}</span>
       <span className="git-spacer" />
       <button className="git-icon" aria-label="切换 Git 列表" aria-pressed={railShown} onClick={() => { setRailPeek(false); writeLayout({ railShown: !railShown }); }}>
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11zM6 3.5v9"/></svg>
-      </button>
-      <button className="git-icon" aria-label={`阅读方式 ${readings[reading]}`} title={`阅读方式：${readings[reading]}（点击切换）`}
-        onClick={() => writeLayout({ reading: readingOrder[(readingOrder.indexOf(reading) + 1) % readingOrder.length] })}>
-        <svg className="git-icon-auto" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11z"/><path d="M8 3.5v9" strokeDasharray="2 2"/></svg>
-        <svg className="git-icon-split" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11zM8 3.5v9"/></svg>
-        <svg className="git-icon-inline" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11zM4.5 6.5h7M4.5 9.5h4"/></svg>
-      </button>
-      <button className="git-icon" aria-label="长行折行" aria-pressed={wrap} onClick={() => writeLayout({ wrap: !wrap })}>
-        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h8a2 2 0 1 1 0 4H8M2.5 12h3"/><path d="M9.4 10.6 8 12l1.4 1.4"/></svg>
-      </button>
-      <button className="git-icon" aria-label="打开文件" title={comparison?.status === 'D' ? '文件已删除' : '打开文件（工作区版本）'}
-        disabled={!overview || !comparison || comparison.status === 'D'} onClick={openFile}>
-        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M9 13.5H2.5v-11h5l3 3V7M7.5 2.5v3h3M7 10h7m-3-3 3 3-3 3"/></svg>
-      </button>
-      <button className="git-icon" aria-label="上一处改动" title="上一处改动（[c）" disabled={!comparison || !blocks}
-        onClick={() => jumps.current?.previous()}>
-        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5 3.5 8M8 3.5 12.5 8M8 3.5v9"/></svg>
-      </button>
-      <button className="git-icon" aria-label="下一处改动" title="下一处改动（]c）" disabled={!comparison || !blocks}
-        onClick={() => jumps.current?.next()}>
-        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12.5 3.5 8M8 12.5 12.5 8M8 12.5v-9"/></svg>
       </button>
       <button className="git-icon" aria-label="刷新 Git" disabled={loading} onClick={() => setToolbarRead(value => value + 1)}>
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 6.2A5 5 0 1 0 13 9"/><path d="M13.2 3v3.4h-3.4"/></svg>
@@ -639,15 +320,9 @@ function Repository({ context, terminal, holder, activation, autoRefresh }: { co
             onKeyDown={(event) => { if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return; event.preventDefault(); writeLayout({ railWidth: clampWidth(railWidth + (event.key === 'ArrowRight' ? 20 : -20)) }); }} />
         </div>
         <div className="git-board">
-          {comparison ? <section className="git-pane" aria-label={`Diff ${comparison.path}`}
-            onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY }); }}>
-            <DiffPane key={paneKey(comparison)} context={context} terminal={terminal} holder={holder} root={overview.root} comparison={comparison} reading={reading} wrap={wrap} caret={caret} keys={keys} jumps={jumps} changes={setBlocks} source={`${pageReads}:${sides(comparison, overview, appliedReads)}`} />
-          </section> : <div className="git-note">选择文件查看 diff</div>}
+          <div className="git-note">选择文件，在编辑器中查看 diff</div>
         </div>
       </div>}
-    {menu && <div className="git-menu" role="menu" style={{ left: menu.x, top: menu.y }}>
-      <button role="menuitem" onClick={() => { setComparison(undefined); setMenu(undefined); }}>关闭</button>
-    </div>}
   </section>;
 }
 
@@ -663,9 +338,9 @@ function GitView({ context, activation, workspaceId, autoRefresh }: { context: U
   }, [context, activation, workspaceId]);
   if (!terminal) return <div className="git-note">请选择一个已连接的终端</div>;
   // The page follows a session, not everything the workspace reports about it: a shell that retitles its workspace
-  // does not move the page to another one, and rebuilding it would take the diff and its caret off the screen.
+  // does not move the page to another one.
   const session = `${terminal.machine.id}|${terminal.machine.host ?? ''}|${terminal.sessionId}`;
-  return <Repository key={session} context={context} terminal={terminal} activation={activation} holder={workspaceId ?? ''} autoRefresh={autoRefresh} />;
+  return <Repository key={session} context={context} terminal={terminal} activation={activation} autoRefresh={autoRefresh} />;
 }
 
 export function open(context: UiContext, record?: TabRecord) {
@@ -682,13 +357,7 @@ export function open(context: UiContext, record?: TabRecord) {
 export async function mount(_container: HTMLElement, context: UiContext) {
   const profile: Settings = context.host.config;
   font = profile.font;
-  theme = profile.theme;
-
-  bus = context.global;
-  // The colours live in the extensions each view was built with, so a switch of theme is read by the views already on
-  // screen through their own subscription; this keeps the palette a view built next starts from.
-  const offTheme = context.global.subscribe<Theme>('theme', (next) => { theme = next; });
   const offActive = context.global.subscribe<WorkspaceActive | null>('workspace:active', (value) => { activeWorkspaceId = value?.workspaceId; });
   void context.global.publish('workspace:query', null);
-  return () => { offActive(); offTheme(); };
+  return () => { offActive(); };
 }

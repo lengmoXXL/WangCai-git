@@ -1,14 +1,13 @@
 import type { MachineConnection, WorkspaceActive } from '@lengmoxxl/sdk';
 import type { MainContext } from '@lengmoxxl/sdk/channel';
-import { readDiff, readFiles, readHistory, readOverview, type RunGit } from './git';
-import type { DiffRequest, FilesRequest, HistoryRequest, OverviewRequest, WatchRequest } from './shared';
+import { readFiles, readHistory, readOverview, type RunGit } from './git';
+import type { FilesRequest, HistoryRequest, OverviewRequest } from './shared';
 
 // What asks the window for the view this plugin draws: the topic it answers, and the plugin id init.ts lists.
 const showView = { event: 'core:show-view', data: { plugin: 'git' } };
 
 export const keys = {
   '<leader>gg': { global: true, insert: true, desc: ['git', '打开 Git 视图'], ...showView },
-  '<leader>gf': { insert: true, desc: ['goto', '打开文件'], event: 'git:open-file' },
   // The page's own Ctrl+Shift+h and Ctrl+Shift+l: the core's Ctrl+h and Ctrl+l walk the window's panes, so the page
   // keeps this pair for itself and answers it only while it holds the keys.
   '<C-S-h>': { insert: true, desc: '回到 Git 列表', event: 'git:focus-rail' },
@@ -19,8 +18,6 @@ export const keys = {
 export const config = {
   font: {
     family: { type: 'string', default: 'Menlo, monospace' },
-    size: { type: 'number', default: 12 },
-    lineHeight: { type: 'number' },
   },
   // Whether the page reads the repository on its own: a poll of `git status`, so a change made outside the window
   // arrives without the refresh button.
@@ -30,20 +27,18 @@ export const config = {
 export function activate(context: MainContext) {
   const pending = new Set<AbortController>();
   const connections = new Set<MachineConnection>();
-  // One request runs on its own connection to a machine, closed again at the end unless the body keeps it: a watch
-  // outlives the request that asked for it.
-  const withConnection = async <T>(machine: WorkspaceActive['machine'], body: (connection: MachineConnection, keep: () => void) => Promise<T>): Promise<T> => {
+  // One request runs on its own connection to a machine, closed again at the end.
+  const withConnection = async <T>(machine: WorkspaceActive['machine'], body: (connection: MachineConnection) => Promise<T>): Promise<T> => {
     const controller = new AbortController();
     pending.add(controller);
     let connection: MachineConnection | undefined;
-    let kept = false;
     try {
       connection = await context.connect(machine, controller.signal);
       controller.signal.throwIfAborted();
       connections.add(connection);
-      return await body(connection, () => { kept = true; });
+      return await body(connection);
     } finally {
-      if (!kept && connection) { connection.disconnect(); connections.delete(connection); }
+      if (connection) { connection.disconnect(); connections.delete(connection); }
       pending.delete(controller);
     }
   };
@@ -60,41 +55,7 @@ export function activate(context: MainContext) {
       readHistory(query, runGit(connection)))),
     context.ui.handle('files', (query: FilesRequest) => withConnection(query.terminal.machine, async connection =>
       readFiles(query, runGit(connection)))),
-    context.ui.handle('diff', (query: DiffRequest) => withConnection(query.terminal.machine, async connection =>
-      readDiff(query, runGit(connection), path => connection.fs.readFile(path)))),
   ];
-  // One watch set per tab: the window keeps a tab per workspace, and a tab that stops showing something must not stop
-  // another tab's watch.
-  const watchers = new Map<string, { key: string; connection: MachineConnection; close: () => void }>();
-  const asked = new Map<string, string>();
-  handlers.push(context.ui.handle('watch', ({ holder, machine, paths }: WatchRequest) => {
-    const key = `${machine.host ?? ''}|${JSON.stringify(paths)}`;
-    asked.set(holder, key);
-    const previous = watchers.get(holder);
-    if (previous?.key === key) return;
-    // What this tab watched before is given up, since it is about to watch what it shows now.
-    if (previous) {
-      previous.close();
-      // The connection was held only while this tab watched something.
-      previous.connection.disconnect();
-      connections.delete(previous.connection);
-      watchers.delete(holder);
-    }
-    if (!paths.length) return;
-    return withConnection(machine, async (connection, keep) => {
-      // A path that cannot be watched is skipped, so one bad path does not cost the others their watch.
-      const closes = (await Promise.all(paths.map(path =>
-        connection.fs.watch(path, {}, () => context.ui.publish('changed', path)).catch(() => undefined))))
-        .filter((close): close is () => void => close !== undefined);
-      // A later request from the same tab took the set over while this one was connecting.
-      if (asked.get(holder) !== key || !closes.length || watchers.has(holder)) {
-        for (const close of closes) close();
-        return;
-      }
-      keep();
-      watchers.set(holder, { key, connection, close: () => { for (const close of closes) close(); } });
-    });
-  }));
   return () => {
     for (const remove of handlers) remove();
     for (const controller of pending) controller.abort();

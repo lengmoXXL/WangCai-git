@@ -1,5 +1,4 @@
-import { posix } from 'node:path';
-import type { Commit, Diff, DiffRequest, FilesRequest, GitFile, History, HistoryRequest, Overview } from './shared';
+import type { Commit, FilesRequest, GitFile, History, HistoryRequest, Overview } from './shared';
 
 export type RunGit = (cwd: string, args: string[]) => Promise<{ stdout: Buffer; stderr: string; code: number }>;
 type Git = (args: string[]) => Promise<Buffer>;
@@ -42,15 +41,13 @@ export async function readOverview(cwd: string, run: RunGit): Promise<Overview> 
     } else if (field[0] === '?') result.changes.push({ path: field.slice(2), status: '?', stage: 'untracked' });
     else if (field[0] === 'u') {
       const parts = field.split(' ');
-      // An unmerged file is read from its second stage, which git names as h2.
-      result.changes.push({ path: parts.slice(10).join(' '), status: 'U', stage: 'conflicted', indexBlob: parts[8] });
+      result.changes.push({ path: parts.slice(10).join(' '), status: 'U', stage: 'conflicted' });
     } else if (field[0] === '1' || field[0] === '2') {
       const parts = field.split(' ');
       const path = parts.slice(field[0] === '1' ? 8 : 9).join(' ');
       const oldPath = field[0] === '2' ? fields[++i] : undefined;
-      // Each side is named by the blob a diff of it reads: hH for the committed side, hI for the index.
-      if (parts[1][0] !== '.') result.changes.push({ path, oldPath, status: parts[1][0], stage: 'staged', headBlob: parts[6], indexBlob: parts[7] });
-      if (parts[1][1] !== '.') result.changes.push({ path, status: parts[1][1], stage: 'unstaged', indexBlob: parts[7] });
+      if (parts[1][0] !== '.') result.changes.push({ path, oldPath, status: parts[1][0], stage: 'staged' });
+      if (parts[1][1] !== '.') result.changes.push({ path, status: parts[1][1], stage: 'unstaged' });
     }
   }
   result.truncated = result.changes.length > 1000;
@@ -78,55 +75,3 @@ export async function readFiles(request: FilesRequest, run: RunGit): Promise<Git
   return files;
 }
 
-// Both sides of a text diff are loaded whole and handed to the editor; past this size the pane asks before loading.
-const diffLimit = 2 * 1024 * 1024;
-
-export async function readDiff(request: DiffRequest, run: RunGit, readFile: (path: string) => Promise<Uint8Array>): Promise<Diff> {
-  const git = gitOf(request.root, run);
-  const comparison = request.comparison;
-  for (const path of [comparison.path, comparison.oldPath ?? comparison.path]) {
-    if (!path || path.includes('\0') || posix.isAbsolute(path) || path.split('/').includes('..')) throw new Error('Invalid repository path');
-  }
-  let tooLarge = 0;
-  const blob = async (tree: string | undefined, path: string, stage = '0'): Promise<Buffer> => {
-    if (tree === '') return Buffer.alloc(0);
-    const records = (await git(tree === undefined ? ['ls-files', '--stage', '-z', '--', path] : ['ls-tree', '-z', tree, '--', path])).toString().split('\0');
-    const record = records.find(record => {
-      const tab = record.indexOf('\t');
-      return record.slice(tab + 1) === path && (tree !== undefined || record.slice(0, tab).split(' ')[2] === stage);
-    });
-    if (!record) return Buffer.alloc(0);
-    const [mode, typeOrHash, hashOrStage] = record.slice(0, record.indexOf('\t')).split(' ');
-    if (mode === '160000') return Buffer.from(`Subproject commit ${tree === undefined ? typeOrHash : hashOrStage}\n`);
-    const hash = tree === undefined ? typeOrHash : hashOrStage;
-    const size = Number((await git(['cat-file', '-s', hash])).toString());
-    if (size > diffLimit && !request.force) { tooLarge = Math.max(tooLarge, size); return Buffer.alloc(0); }
-    return git(['cat-file', 'blob', hash]);
-  };
-  const oldPath = comparison.oldPath ?? comparison.path;
-  let oldBytes: Uint8Array;
-  let newBytes: Uint8Array;
-  if (comparison.source === 'commit') {
-    const sha = revision(comparison.rev);
-    const parents = (await git(['rev-list', '--parents', '-n', '1', sha, '--'])).toString().trim().split(' ');
-    oldBytes = await blob(parents[1] ?? '', oldPath);
-    newBytes = await blob(sha, comparison.path);
-  } else if (comparison.source === 'staged') {
-    const head = await run(request.root, ['rev-parse', '--verify', '--quiet', 'HEAD']);
-    if (head.code !== 0 && head.code !== 1) throw new Error(head.stderr || 'Cannot resolve HEAD');
-    oldBytes = await blob(head.code === 0 ? head.stdout.toString().trim() : '', oldPath);
-    newBytes = await blob(undefined, comparison.path);
-  } else {
-    oldBytes = comparison.source === 'untracked' ? Buffer.alloc(0) : await blob(undefined, comparison.path, comparison.source === 'conflicted' ? '2' : '0');
-    newBytes = comparison.status === 'D' ? Buffer.alloc(0) : await readFile(posix.join(request.root, comparison.path));
-  }
-  const result: Diff = { oldText: '', newText: '' };
-  const largest = Math.max(tooLarge, oldBytes.length, newBytes.length);
-  if (largest > diffLimit && !request.force) return { ...result, tooLarge: largest };
-  if (oldBytes.includes(0) || newBytes.includes(0)) return { ...result, notice: 'Binary files cannot be compared as text' };
-  try {
-    const decoder = new TextDecoder(undefined, { fatal: true });
-    result.oldText = decoder.decode(oldBytes); result.newText = decoder.decode(newBytes);
-  } catch { result.notice = 'Non-UTF-8 files cannot be compared as text'; }
-  return result;
-}
