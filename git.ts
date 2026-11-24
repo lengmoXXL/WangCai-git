@@ -1,4 +1,4 @@
-import type { Commit, FilesRequest, GitFile, History, HistoryRequest, Overview } from './shared';
+import type { Commit, Comparison, FilesRequest, GitFile, History, HistoryRequest, Overview } from './shared';
 
 export type RunGit = (cwd: string, args: string[]) => Promise<{ stdout: Buffer; stderr: string; code: number }>;
 type Git = (args: string[]) => Promise<Buffer>;
@@ -75,3 +75,20 @@ export async function readFiles(request: FilesRequest, run: RunGit): Promise<Git
   return files;
 }
 
+// The change as the patch git itself prints: each source names the two sides git diff reads, so the preview is the
+// command's own output rather than a second diffing of the two texts.
+export async function readPatch(root: string, comparison: Comparison, run: RunGit): Promise<string> {
+  const path = comparison.path;
+  if (!path || path.includes('\0') || path.split('/').includes('..')) throw new Error('Invalid repository path');
+  const args = comparison.source === 'commit' ? ['show', '--format=', revision(comparison.rev), '--', path]
+    : comparison.source === 'staged' ? ['diff', '--cached', '-M', '--', path]
+    : comparison.source === 'unstaged' ? ['diff', '-M', '--', path]
+    : comparison.source === 'untracked' ? ['diff', '--no-index', '--', '/dev/null', path]
+    : ['diff', '--ours', '--', path];
+  const result = await run(root, args);
+  // --no-index exits 1 when the two files differ, which is the comparison's whole point.
+  if (result.code !== 0 && !(comparison.source === 'untracked' && result.code === 1)) {
+    throw new Error(result.stderr.trim() || `git ${args[0]} failed (${result.code})`);
+  }
+  return result.stdout.toString();
+}

@@ -25,3 +25,4 @@ export type Comparison = GitFile & ({ source: Stage } | { source: 'commit'; rev:
 export interface OverviewRequest { terminal: WorkspaceActive }
 export interface HistoryRequest { terminal: WorkspaceActive; root: string; head: string; skip: number }
 export interface FilesRequest { terminal: WorkspaceActive; root: string; rev: string }
+export interface DiffRequest { terminal: WorkspaceActive; root: string; comparison: Comparison }

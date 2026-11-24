@@ -181,7 +181,7 @@ test('The rail answers hjkl, folds sections and toggles commits', { timeout: cas
     assert.match(await heldKey(page), /^commit:/, 'h on a file closes the commit and leaves the keys on its row');
   }));
 
-test('Choosing a file publishes the comparison as a git:// click for the editor', { timeout: caseTimeout }, () => withGitApp('wangcai-git-click',
+test('A chosen file previews its change; a hunk opens the comparison and the button opens the file', { timeout: caseTimeout }, () => withGitApp('wangcai-git-click',
   gitLists,
   async ({ home, env, page }) => {
     const { repo, git } = repoIn(home, env, 'repo');
@@ -194,15 +194,25 @@ test('Choosing a file publishes the comparison as a git:// click for the editor'
     writeFileSync(join(repo, 'new.ts'), 'const n = 1;\n');
     await readRepo(page, repo, 'repo');
     await catchClicks(page);
+    // Choosing a file renders its patch in the board; clicking a hunk hands the comparison to the editor.
+    const choose = async (section, name) => {
+      await sectionFiles(page, section).filter({ hasText: name }).click();
+      await page.locator('.git-hunk').first().waitFor();
+      await page.locator('.git-hunk').first().click();
+    };
     // The unstaged side reads the index against the worktree; the staged side reads HEAD against the index.
-    await sectionFiles(page, '未暂存').filter({ hasText: 'app.ts' }).click();
+    await choose('未暂存', 'app.ts');
     await until(async () => (await lastClick(page))?.path.endsWith('app.ts@:index~:worktree'));
     assert.equal((await lastClick(page)).type, 'file');
-    await sectionFiles(page, '已暂存').filter({ hasText: 'app.ts' }).click();
+    await choose('已暂存', 'app.ts');
     await until(async () => (await lastClick(page))?.path.endsWith('app.ts@HEAD~:index'));
     // An untracked file has no old side, so its base is the empty token.
-    await sectionFiles(page, '未跟踪').filter({ hasText: 'new.ts' }).click();
+    await choose('未跟踪', 'new.ts');
     await until(async () => (await lastClick(page))?.path.endsWith('new.ts@:empty~:worktree'));
+    // The header button opens the worktree file directly, not a comparison.
+    await sectionFiles(page, '未暂存').filter({ hasText: 'app.ts' }).click();
+    await page.getByRole('button', { name: '打开文件' }).click();
+    await until(async () => { const click = await lastClick(page); return click && !click.path.startsWith('git://') && click.path.endsWith('/app.ts'); });
   }));
 
 test('Ctrl+Shift+h slides a hidden list out, and choosing a file slides it back', { timeout: caseTimeout }, () => withGitApp('wangcai-git-peek',
@@ -222,6 +232,8 @@ test('Ctrl+Shift+h slides a hidden list out, and choosing a file slides it back'
     await page.keyboard.press('j');
     assert.equal(await heldKey(page), 'change:unstaged:peek.ts', 'the keys walk the list the press slid out');
     await page.keyboard.press('l');
+    await page.locator('.git-hunk').first().waitFor();
+    await page.locator('.git-hunk').first().click();
     await until(async () => (await lastClick(page))?.path.endsWith('peek.ts@:index~:worktree'));
     assert.equal(await gitRail(page).isVisible(), false, 'the file the keys chose slides the list away again');
   }));

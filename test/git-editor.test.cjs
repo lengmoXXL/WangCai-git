@@ -35,7 +35,7 @@ const createWorkspace = async (page) => {
 const diffHost = '.editor-diff .git-editor';
 const lineShown = (page, side, text) => until(() => page.locator(`${diffHost} ${side} .cm-line`).filter({ hasText: text }).count().then(n => n > 0));
 
-test('a file chosen in the Git list opens its comparison in the editor', { timeout: 180000 }, () => withHome('wangcai-git-editor', lists, async ({ home, env, open }) => {
+test('a file chosen in the Git list previews its change; a hunk opens the comparison in the editor', { timeout: 180000 }, () => withHome('wangcai-git-editor', lists, async ({ home, env, open }) => {
   const { page } = await open();
   const repo = join(home, 'repo');
   mkdirSync(repo);
@@ -55,8 +55,10 @@ test('a file chosen in the Git list opens its comparison in the editor', { timeo
   await page.getByRole('button', { name: '刷新 Git' }).click();
   await page.locator('.git-branch').filter({ hasText: 'main' }).waitFor();
 
-  // Choosing the unstaged file hands the comparison to the editor, which draws both sides of it.
+  // Choosing the unstaged file previews its change in the board; clicking a hunk hands the comparison to the editor.
   await page.locator('.git-rail details').filter({ has: page.locator('summary', { hasText: /^未暂存/ }) }).locator('.git-file').first().click();
+  await page.locator('.git-hunk').first().waitFor();
+  await page.locator('.git-hunk').first().click();
   const gear = page.getByRole('button', { name: '差异设置' });
   await gear.click();
   const reading = page.locator('.code-menu button').filter({ hasText: /^阅读方式/ });

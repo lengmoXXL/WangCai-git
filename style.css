@@ -58,3 +58,14 @@
 .git-note { padding: 12px; color: var(--wc-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .git-note[role=alert] { color: var(--wc-red); }
 .git-board > .git-note { align-self: flex-start; max-width: 100%; }
+.git-diff { flex: 1; min-width: 0; overflow: auto; padding: 0 8px 8px; font-family: monospace; line-height: 1.5; }
+.git-diff-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--wc-surface); border-bottom: 1px solid var(--wc-border); }
+.git-diff-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--wc-muted); }
+.git-page .git-diff-open { flex-shrink: 0; padding: 2px 10px; border: 1px solid var(--wc-border); border-radius: 4px; color: var(--wc-accent); }
+.git-hunk { margin: 8px 0; border: 1px solid var(--wc-border); border-radius: 6px; overflow: hidden; cursor: pointer; }
+.git-hunk:hover { border-color: var(--wc-accent); }
+.git-hunk:focus-visible { outline: 2px solid var(--wc-accent); outline-offset: -2px; }
+.git-hunk-header { padding: 2px 8px; color: var(--wc-muted); background: var(--wc-overlay); }
+.git-diff-line { padding: 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.git-diff-line.add { color: var(--wc-green); background: color-mix(in srgb, var(--wc-green) 12%, transparent); }
+.git-diff-line.del { color: var(--wc-red); background: color-mix(in srgb, var(--wc-red) 12%, transparent); }

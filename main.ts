@@ -1,7 +1,7 @@
 import type { MachineConnection, WorkspaceActive } from '@lengmoxxl/sdk';
 import type { MainContext } from '@lengmoxxl/sdk/channel';
-import { readFiles, readHistory, readOverview, type RunGit } from './git';
-import type { FilesRequest, HistoryRequest, OverviewRequest } from './shared';
+import { readFiles, readHistory, readOverview, readPatch, type RunGit } from './git';
+import type { DiffRequest, FilesRequest, HistoryRequest, OverviewRequest } from './shared';
 
 // What asks the window for the view this plugin draws: the topic it answers, and the plugin id init.ts lists.
 const showView = { event: 'core:show-view', data: { plugin: 'git' } };
@@ -56,6 +56,8 @@ export function activate(context: MainContext) {
       readHistory(query, runGit(connection)))),
     context.ui.handle('files', (query: FilesRequest) => withConnection(query.terminal.machine, async connection =>
       readFiles(query, runGit(connection)))),
+    context.ui.handle('diff', (query: DiffRequest) => withConnection(query.terminal.machine, async connection =>
+      readPatch(query.root, query.comparison, runGit(connection)))),
   ];
   return () => {
     for (const remove of handlers) remove();

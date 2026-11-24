@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, UIEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { FileClick, WorkspaceActive } from '@lengmoxxl/sdk';
@@ -42,6 +42,12 @@ const mark = (cursor: string, row: string) => cursor === row ? '' : undefined;
 
 // A repository root and a path inside it, as the machine's absolute path: '/' is the one root that adds nothing.
 const absolute = (root: string, path: string) => `${root === '/' ? '' : root}/${path}`;
+
+// Handing a file to the editor is one protocol: the click that names it, then the view that reads it.
+const openInEditor = (context: UiContext, machine: WorkspaceActive['machine'], path: string, line?: number) => {
+  void context.global.publish('onclick', { type: 'file', machine, path, line } satisfies FileClick);
+  void context.global.publish('core:show-view', { plugin: 'editor' });
+};
 
 // The comparison as the resource the editor reads: git://<path>@<base>~<head>, the two sides named by revision or by
 // the index/worktree tokens, with the old name a rename gives carried for the old side.
@@ -116,6 +122,54 @@ function CommitRow({ commit, context, terminal, root, selected, cursor, toggle, 
 // How long an open page waits between two reads of the repository, when `autoRefresh` is on.
 const pollMilliseconds = 3000;
 
+type Hunk = { start: number; header: string; lines: string[] };
+// The patch git prints, split into the hunks a reader clicks: each @@ header names the line the new side starts at, which
+// is where a click lands in the file.
+const parseHunks = (patch: string): Hunk[] => {
+  const hunks: Hunk[] = [];
+  let current: Hunk | undefined;
+  for (const line of patch.split('\n')) {
+    if (line.startsWith('@@')) {
+      const at = line.match(/\+(\d+)/);
+      current = { start: at ? Number(at[1]) : 1, header: line, lines: [] };
+      hunks.push(current);
+    } else if (current && /^[ +-]/.test(line)) {
+      current.lines.push(line);
+    }
+  }
+  return hunks;
+};
+
+// The change rendered as git prints it: a hunk a click opens in the editor at the line it begins on.
+function DiffPreview({ context, terminal, root, comparison }: { context: UiContext; terminal: WorkspaceActive; root: string; comparison: Comparison }) {
+  const [patch, setPatch] = useState<string>();
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let alive = true;
+    setPatch(undefined); setError('');
+    void context.ui.request<string>('diff', { terminal, root, comparison })
+      .then(value => { if (alive) setPatch(value); })
+      .catch((problem: Error) => { if (alive) setError(problem.message); });
+    return () => { alive = false; };
+  }, [context, terminal, root, comparison]);
+  const hunks = useMemo(() => parseHunks(patch ?? ''), [patch]);
+  const showEditor = (path: string, line?: number) => openInEditor(context, terminal.machine, path, line);
+  return <div className="git-diff">
+    <div className="git-diff-head">
+      <span className="git-diff-path" title={comparison.oldPath ? `${comparison.oldPath} → ${comparison.path}` : comparison.path}>{comparison.path}</span>
+      <button className="git-diff-open" onClick={() => showEditor(absolute(root, comparison.path))}>打开文件</button>
+    </div>
+    {error ? <div className="git-note" role="alert">{error}</div>
+      : patch === undefined ? <div className="git-note">正在读取…</div>
+      : !hunks.length ? <div className="git-note">无改动</div>
+      : hunks.map((hunk, at) => <div key={at} className="git-hunk" role="button" tabIndex={0} title="在编辑器中打开这一处"
+          onClick={() => showEditor(comparisonUri(root, comparison), hunk.start)} onKeyDown={(event) => { if (event.key === 'Enter') showEditor(comparisonUri(root, comparison), hunk.start); }}>
+          <div className="git-hunk-header">{hunk.header}</div>
+          {hunk.lines.map((line, i) => <div key={i} className={`git-diff-line ${line[0] === '+' ? 'add' : line[0] === '-' ? 'del' : ''}`}>{line}</div>)}
+        </div>)}
+  </div>;
+}
+
 function Repository({ context, terminal, activation, autoRefresh }: { context: UiContext; terminal: WorkspaceActive; activation: number; autoRefresh: boolean }) {
   const [overview, setOverview] = useState<Overview>();
   const [error, setError] = useState('');
@@ -127,6 +181,8 @@ function Repository({ context, terminal, activation, autoRefresh }: { context: U
   const [railPeek, setRailPeek] = useState(false);
   // The row the rail's keys hold, named by the row's own key, so a read that redraws the list leaves it on that row.
   const [cursor, setCursor] = useState('');
+  // The change the board previews: choosing a file renders its patch here, and a hunk a click opens in the editor.
+  const [comparison, setComparison] = useState<Comparison | null>(null);
   const body = useRef<HTMLDivElement>(null);
   const drag = useRef<{ origin: number; width: number }>(undefined);
   const railMinimum = 180;
@@ -151,7 +207,7 @@ function Repository({ context, terminal, activation, autoRefresh }: { context: U
         const text = JSON.stringify(value);
         if (!forced && text === lastRead.current) return;
         lastRead.current = text;
-        if (repositoryRoot.current !== value.root) setOpened(value.commits[0]?.sha ?? null);
+        if (repositoryRoot.current !== value.root) { setOpened(value.commits[0]?.sha ?? null); setComparison(null); }
         repositoryRoot.current = value.root;
         setOverview(value);
         setError('');
@@ -210,20 +266,17 @@ function Repository({ context, terminal, activation, autoRefresh }: { context: U
     const stage = details.dataset.stage as Stage;
     writeLayout({ folded: closed ? (folded.includes(stage) ? folded : [...folded, stage]) : folded.filter((one) => one !== stage) });
   };
-  // Choosing a file from the rail opens its comparison in the editor, which is the view that reads a diff now.
+  // Choosing a file from the rail previews its change in the board; a hunk or the open button is what hands it to the editor.
   const show = (next: Comparison) => {
-    if (!overview) return;
     setRailPeek(false);
-    void context.global.publish('onclick', { type: 'file', machine: terminal.machine, path: comparisonUri(overview.root, next) } satisfies FileClick);
-    void context.global.publish('core:show-view', { plugin: 'editor' });
+    setComparison(next);
   };
   // leader gf opens the held file as a normal editable view rather than a comparison: the worktree file itself.
   const openHeldFile = () => {
     const path = heldRow()?.dataset.path;
     if (!path || !overview) return;
     setRailPeek(false);
-    void context.global.publish('onclick', { type: 'file', machine: terminal.machine, path: absolute(overview.root, path) } satisfies FileClick);
-    void context.global.publish('core:show-view', { plugin: 'editor' });
+    openInEditor(context, terminal.machine, absolute(overview.root, path));
   };
   const into = () => { heldRow()?.click(); };
   const out = () => {
@@ -329,7 +382,9 @@ function Repository({ context, terminal, activation, autoRefresh }: { context: U
             onKeyDown={(event) => { if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return; event.preventDefault(); writeLayout({ railWidth: clampWidth(railWidth + (event.key === 'ArrowRight' ? 20 : -20)) }); }} />
         </div>
         <div className="git-board">
-          <div className="git-note">选择文件，在编辑器中查看 diff</div>
+          {comparison
+            ? <DiffPreview context={context} terminal={terminal} root={overview.root} comparison={comparison} />
+            : <div className="git-note">选择文件查看改动，点击改动处跳转到文件</div>}
         </div>
       </div>}
   </section>;
