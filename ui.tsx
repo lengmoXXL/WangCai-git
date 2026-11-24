@@ -80,11 +80,6 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
     const host = element.current!;
     const colours = new Compartment();
     const wrapping = new Compartment();
-    const now = (state: EditorState = side.state) => {
-      const head = state.selection.main.head;
-      const line = state.doc.lineAt(head);
-      return { line: line.number, column: head - line.from + 1 };
-    };
     const common = [
       colours.of(editorTheme(theme, font)),
       wrapping.of(wrap ? EditorView.lineWrapping : []),
@@ -143,6 +138,11 @@ function DiffEditor({ diff, path, reading, wrap, caret, keys, jumps, changes }: 
     const seat = (line: number, column: number) => {
       const at = side.state.doc.line(Math.min(side.state.doc.lines, Math.max(1, line)));
       return Math.min(at.to, at.from + Math.max(0, column - 1));
+    };
+    const now = (state: EditorState = side.state) => {
+      const head = state.selection.main.head;
+      const line = state.doc.lineAt(head);
+      return { line: line.number, column: head - line.from + 1 };
     };
     // The caret is revealed at the centre only when the scroll no longer shows it.
     const reveal = () => {
