@@ -335,9 +335,10 @@ function Repository({ context, terminal, activation, autoRefresh }: { context: U
     openInEditor(context, terminal.machine, absolute(overview.root, path));
   };
   const into = () => {
-    heldRow()?.click();
-    // The click renders the preview and the rail's occupy takes the focus back; hand the keys over once that settles.
-    requestAnimationFrame(() => body.current?.closest('[data-plugin]')?.querySelector<HTMLElement>('.git-diff')?.focus());
+    const row = heldRow();
+    row?.click();
+    // A file row opens the patch and hands it the keys once the click settles; a commit or section row only toggles its list.
+    if (row?.dataset.path) requestAnimationFrame(() => body.current?.closest('[data-plugin]')?.querySelector<HTMLElement>('.git-diff')?.focus());
   };
   const out = () => {
     const row = heldRow();
@@ -365,7 +366,7 @@ function Repository({ context, terminal, activation, autoRefresh }: { context: U
   };
   useEffect(() => { if (railPeek) seatRow(); }, [railPeek]);
   const shown = () => Boolean(body.current?.checkVisibility());
-  // Ctrl+Shift+l opens the held row's comparison in the editor; Ctrl+Shift+h lands the keys back on the list.
+  // Ctrl+Shift+l enters the held file's patch, or toggles a commit/section row's list; Ctrl+Shift+h lands the keys back on the list.
   useEffect(() => {
     const backToRail = context.global.subscribe('git:focus-rail', () => { if (shown()) leaveDiff(); });
     const intoDiff = context.global.subscribe('git:focus-diff', () => { if (shown()) into(); });

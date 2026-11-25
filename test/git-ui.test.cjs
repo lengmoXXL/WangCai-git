@@ -174,6 +174,7 @@ test('The rail answers hjkl, folds sections and toggles commits', { timeout: cas
     assert.match(await heldKey(page), /^commit:/, 'G lands on the last commit row');
     await page.keyboard.press('l');
     await commitFiles(page).first().waitFor();
+    assert.ok(await page.evaluate(() => document.activeElement?.closest('.git-rail') !== null), 'l on a commit toggles its files without leaving the list for the patch');
     await page.keyboard.press('j');
     assert.match(await heldKey(page), /^commitfile:/, 'j walks into the commit files');
     await page.keyboard.press('h');
