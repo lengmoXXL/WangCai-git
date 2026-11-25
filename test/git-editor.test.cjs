@@ -67,4 +67,13 @@ test('a file chosen in the Git list previews its change; a hunk opens the compar
   await lineShown(page, '.cm-merge-a', "const greet = 'hi';");
   await lineShown(page, '.cm-merge-b', "const greet = 'hello';");
   assert.ok(await page.locator('.editor-diff').isVisible(), 'the editor shows the comparison');
+  // Returning to the Git tab seats the keyboard back in the patch, where it was before the jump.
+  await page.locator('.sidebar-tab', { hasText: 'Git' }).click();
+  await until(() => page.evaluate(() => document.activeElement?.classList.contains('git-diff') ?? false));
+  // Hand the keys to the list, leave for the editor and return: the list is where they land this time.
+  await page.locator('.git-rail summary').first().click();
+  await until(() => page.evaluate(() => document.activeElement?.closest('.git-rail') !== null));
+  await page.locator('.sidebar-tab:not(:has-text("Git"))').click();
+  await page.locator('.sidebar-tab', { hasText: 'Git' }).click();
+  await until(() => page.evaluate(() => document.activeElement?.closest('.git-rail') !== null));
 }));

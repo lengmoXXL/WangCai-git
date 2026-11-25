@@ -149,6 +149,9 @@ const parsePatch = (patch: string): PatchLine[] => {
   return lines;
 };
 
+// Which pane last held the keyboard, so returning to the view seats it there again rather than always at the list.
+let lastPane: 'history' | 'patch' = 'history';
+
 // The whole patch as a read-only vim view: a block cursor walks it with h/j/k/l, gg/G and a count, and Enter opens the
 // line it sits on in the editor.
 function DiffPreview({ context, terminal, root, comparison }: { context: UiContext; terminal: WorkspaceActive; root: string; comparison: Comparison }) {
@@ -168,15 +171,12 @@ function DiffPreview({ context, terminal, root, comparison }: { context: UiConte
   }, [context, terminal, root, comparison]);
   const lines = useMemo(() => parsePatch(patch ?? ''), [patch]);
   const showEditor = (path: string, line?: number) => openInEditor(context, terminal.machine, path, line);
-  // The pane takes the keyboard when it is shown so its motions answer, unless a box is being typed into.
+  // A freshly opened pane takes the keyboard.
   useEffect(() => {
     const node = element.current;
-    if (!node) return;
-    const focus = () => { const at = document.activeElement; if (!(at instanceof HTMLElement && ['INPUT', 'TEXTAREA'].includes(at.tagName))) node.focus(); };
-    focus();
-    const page = node.closest<HTMLElement>('[data-plugin]');
-    page?.addEventListener('wangcai:shown', focus);
-    return () => page?.removeEventListener('wangcai:shown', focus);
+    const at = document.activeElement;
+    // This mount effect runs before the list's focusin watcher is attached, so it records the pane itself.
+    if (node && !(at instanceof HTMLElement && ['INPUT', 'TEXTAREA'].includes(at.tagName))) { lastPane = 'patch'; node.focus(); }
   }, []);
   useEffect(() => { element.current?.querySelectorAll('.git-diff-line')[cursor.line]?.scrollIntoView({ block: 'nearest' }); }, [cursor.line, lines]);
   const open = (at: number) => { const line = lines[at]; if (line?.newLine) showEditor(comparisonUri(root, comparison), line.newLine); };
@@ -377,8 +377,17 @@ function Repository({ context, terminal, activation, autoRefresh }: { context: U
   useEffect(() => {
     const panel = body.current?.closest<HTMLElement>('.sidebar-panel');
     if (!panel) return;
-    const regain = () => seatRow();
+    const regain = () => {
+      const patch = lastPane === 'patch' ? panel.querySelector<HTMLElement>('.git-diff') : null;
+      if (patch) patch.focus(); else seatRow();
+    };
+    const notePane = (event: FocusEvent) => {
+      const target = event.target as HTMLElement;
+      if (target.closest('.git-diff')) lastPane = 'patch';
+      else if (target.closest('.git-rail')) lastPane = 'history';
+    };
     panel.addEventListener('wangcai:shown', regain);
+    panel.addEventListener('focusin', notePane);
     const unbind = bindKeys(panel, [
       { keys: 'j', run: () => step(1) },
       { keys: '<Down>', run: () => step(1) },
@@ -394,7 +403,7 @@ function Repository({ context, terminal, activation, autoRefresh }: { context: U
     ], {
       ignore: (event) => pressIn(event, '.git-divider') || pressIn(event, '.git-diff'),
     });
-    return () => { panel.removeEventListener('wangcai:shown', regain); unbind(); };
+    return () => { panel.removeEventListener('wangcai:shown', regain); panel.removeEventListener('focusin', notePane); unbind(); };
   });
   return <section className="git-page" aria-label="Git history">
     <header className="git-toolbar">
