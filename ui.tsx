@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import type { CSSProperties, UIEvent } from 'react';
+import type { CSSProperties, KeyboardEvent, UIEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { FileClick, WorkspaceActive } from '@lengmoxxl/sdk';
 import type { TabRecord, UiContext } from '@lengmoxxl/sdk/channel';
@@ -122,51 +122,107 @@ function CommitRow({ commit, context, terminal, root, selected, cursor, toggle, 
 // How long an open page waits between two reads of the repository, when `autoRefresh` is on.
 const pollMilliseconds = 3000;
 
-type Hunk = { start: number; header: string; lines: string[] };
-// The patch git prints, split into the hunks a reader clicks: each @@ header names the line the new side starts at, which
-// is where a click lands in the file.
-const parseHunks = (patch: string): Hunk[] => {
-  const hunks: Hunk[] = [];
-  let current: Hunk | undefined;
-  for (const line of patch.split('\n')) {
-    if (line.startsWith('@@')) {
-      const at = line.match(/\+(\d+)/);
-      current = { start: at ? Number(at[1]) : 1, header: line, lines: [] };
-      hunks.push(current);
-    } else if (current && /^[ +-]/.test(line)) {
-      current.lines.push(line);
+type PatchLine = { text: string; kind: 'add' | 'del' | 'ctx' | 'hunk' | 'meta'; newLine?: number };
+
+// The patch git prints, line by line, each new-side line numbered so the cursor can land in the file: @@ sets the
+// counter, + and context lines advance it, - lines belong to the old side only.
+const parsePatch = (patch: string): PatchLine[] => {
+  const raw = patch.split('\n');
+  if (raw[raw.length - 1] === '') raw.pop();
+  const lines: PatchLine[] = [];
+  let next = 1;
+  for (const text of raw) {
+    if (text.startsWith('@@')) {
+      const at = text.match(/\+(\d+)/);
+      next = at ? Number(at[1]) : 1;
+      lines.push({ text, kind: 'hunk', newLine: next });
+    } else if (text.startsWith('+')) {
+      lines.push({ text, kind: 'add', newLine: next++ });
+    } else if (text.startsWith('-')) {
+      lines.push({ text, kind: 'del' });
+    } else if (text.startsWith(' ')) {
+      lines.push({ text, kind: 'ctx', newLine: next++ });
+    } else {
+      lines.push({ text, kind: 'meta' });
     }
   }
-  return hunks;
+  return lines;
 };
 
-// The change rendered as git prints it: a hunk a click opens in the editor at the line it begins on.
+// The whole patch as a read-only vim view: a block cursor walks it with h/j/k/l, gg/G and a count, and Enter opens the
+// line it sits on in the editor.
 function DiffPreview({ context, terminal, root, comparison }: { context: UiContext; terminal: WorkspaceActive; root: string; comparison: Comparison }) {
   const [patch, setPatch] = useState<string>();
   const [error, setError] = useState('');
+  const [cursor, setCursor] = useState({ line: 0, col: 0 });
+  const element = useRef<HTMLDivElement>(null);
+  const count = useRef('');
+  const pendingG = useRef(false);
   useEffect(() => {
     let alive = true;
-    setPatch(undefined); setError('');
+    setPatch(undefined); setError(''); setCursor({ line: 0, col: 0 });
     void context.ui.request<string>('diff', { terminal, root, comparison })
       .then(value => { if (alive) setPatch(value); })
       .catch((problem: Error) => { if (alive) setError(problem.message); });
     return () => { alive = false; };
   }, [context, terminal, root, comparison]);
-  const hunks = useMemo(() => parseHunks(patch ?? ''), [patch]);
+  const lines = useMemo(() => parsePatch(patch ?? ''), [patch]);
   const showEditor = (path: string, line?: number) => openInEditor(context, terminal.machine, path, line);
-  return <div className="git-diff">
+  // The pane takes the keyboard when it is shown so its motions answer, unless a box is being typed into.
+  useEffect(() => {
+    const node = element.current;
+    if (!node) return;
+    const focus = () => { const at = document.activeElement; if (!(at instanceof HTMLElement && ['INPUT', 'TEXTAREA'].includes(at.tagName))) node.focus(); };
+    focus();
+    const page = node.closest<HTMLElement>('[data-plugin]');
+    page?.addEventListener('wangcai:shown', focus);
+    return () => page?.removeEventListener('wangcai:shown', focus);
+  }, []);
+  useEffect(() => { element.current?.querySelectorAll('.git-diff-line')[cursor.line]?.scrollIntoView({ block: 'nearest' }); }, [cursor.line, lines]);
+  const open = (at: number) => { const line = lines[at]; if (line?.newLine) showEditor(comparisonUri(root, comparison), line.newLine); };
+  const seatedCol = (line: number, col: number) => Math.min(col, Math.max(0, (lines[line]?.text.length ?? 1) - 1));
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    const key = event.key;
+    if (/^[0-9]$/.test(key) && !(key === '0' && count.current === '')) { count.current += key; event.preventDefault(); return; }
+    const step = Number(count.current) || 1;
+    count.current = '';
+    if (key === 'g') { if (pendingG.current) { setCursor({ line: 0, col: 0 }); pendingG.current = false; } else pendingG.current = true; event.preventDefault(); return; }
+    pendingG.current = false;
+    const last = lines.length - 1;
+    if (key === 'j') { setCursor(c => { const line = Math.min(last, c.line + step); return { line, col: seatedCol(line, c.col) }; }); event.preventDefault(); }
+    else if (key === 'k') { setCursor(c => { const line = Math.max(0, c.line - step); return { line, col: seatedCol(line, c.col) }; }); event.preventDefault(); }
+    else if (key === 'h') { setCursor(c => ({ ...c, col: Math.max(0, c.col - step) })); event.preventDefault(); }
+    else if (key === 'l') { setCursor(c => ({ ...c, col: seatedCol(c.line, c.col + step) })); event.preventDefault(); }
+    else if (key === 'G') { setCursor(c => ({ line: last, col: seatedCol(last, c.col) })); event.preventDefault(); }
+    else if (key === 'Enter') { open(cursor.line); event.preventDefault(); }
+  };
+  const col = seatedCol(cursor.line, cursor.col);
+  return <div className="git-diff" ref={element} tabIndex={0} onKeyDown={onKeyDown}>
     <div className="git-diff-head">
       <span className="git-diff-path" title={comparison.oldPath ? `${comparison.oldPath} → ${comparison.path}` : comparison.path}>{comparison.path}</span>
       <button className="git-diff-open" onClick={() => showEditor(absolute(root, comparison.path))}>打开文件</button>
     </div>
     {error ? <div className="git-note" role="alert">{error}</div>
       : patch === undefined ? <div className="git-note">正在读取…</div>
-      : !hunks.length ? <div className="git-note">无改动</div>
-      : hunks.map((hunk, at) => <div key={at} className="git-hunk" role="button" tabIndex={0} title="在编辑器中打开这一处"
-          onClick={() => showEditor(comparisonUri(root, comparison), hunk.start)} onKeyDown={(event) => { if (event.key === 'Enter') showEditor(comparisonUri(root, comparison), hunk.start); }}>
-          <div className="git-hunk-header">{hunk.header}</div>
-          {hunk.lines.map((line, i) => <div key={i} className={`git-diff-line ${line[0] === '+' ? 'add' : line[0] === '-' ? 'del' : ''}`}>{line}</div>)}
-        </div>)}
+      : !lines.length ? <div className="git-note">无改动</div>
+      : lines.map((line, at) => {
+          const active = at === cursor.line;
+          return <div key={at} data-line={line.newLine} data-col={active ? col : undefined} className={`git-diff-line ${line.kind}${active ? ' git-diff-active' : ''}`} onClick={(event) => {
+            const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);
+            let clicked = 0;
+            if (range && event.currentTarget.contains(range.startContainer)) {
+              const before = range.cloneRange();
+              before.selectNodeContents(event.currentTarget);
+              before.setEnd(range.startContainer, range.startOffset);
+              clicked = before.toString().length;
+            }
+            setCursor({ line: at, col: seatedCol(at, clicked) });
+            open(at);
+          }}>
+            {active ? <>{line.text.slice(0, col)}<span className="git-cursor">{line.text[col] ?? ' '}</span>{line.text.slice(col + 1)}</> : line.text || ' '}
+          </div>;
+        })}
   </div>;
 }
 
@@ -278,7 +334,11 @@ function Repository({ context, terminal, activation, autoRefresh }: { context: U
     setRailPeek(false);
     openInEditor(context, terminal.machine, absolute(overview.root, path));
   };
-  const into = () => { heldRow()?.click(); };
+  const into = () => {
+    heldRow()?.click();
+    // The click renders the preview and the rail's occupy takes the focus back; hand the keys over once that settles.
+    requestAnimationFrame(() => body.current?.closest('[data-plugin]')?.querySelector<HTMLElement>('.git-diff')?.focus());
+  };
   const out = () => {
     const row = heldRow();
     if (!row) return;
@@ -332,7 +392,7 @@ function Repository({ context, terminal, activation, autoRefresh }: { context: U
       { keys: 'h', run: out },
       { keys: '<Left>', run: out },
     ], {
-      ignore: (event) => pressIn(event, '.git-divider'),
+      ignore: (event) => pressIn(event, '.git-divider') || pressIn(event, '.git-diff'),
     });
     return () => { panel.removeEventListener('wangcai:shown', regain); unbind(); };
   });

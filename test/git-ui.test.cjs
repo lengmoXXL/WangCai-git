@@ -197,8 +197,8 @@ test('A chosen file previews its change; a hunk opens the comparison and the but
     // Choosing a file renders its patch in the board; clicking a hunk hands the comparison to the editor.
     const choose = async (section, name) => {
       await sectionFiles(page, section).filter({ hasText: name }).click();
-      await page.locator('.git-hunk').first().waitFor();
-      await page.locator('.git-hunk').first().click();
+      await page.locator('.git-diff-line.hunk').first().waitFor();
+      await page.locator('.git-diff-line.hunk').first().click();
     };
     // The unstaged side reads the index against the worktree; the staged side reads HEAD against the index.
     await choose('未暂存', 'app.ts');
@@ -232,8 +232,8 @@ test('Ctrl+Shift+h slides a hidden list out, and choosing a file slides it back'
     await page.keyboard.press('j');
     assert.equal(await heldKey(page), 'change:unstaged:peek.ts', 'the keys walk the list the press slid out');
     await page.keyboard.press('l');
-    await page.locator('.git-hunk').first().waitFor();
-    await page.locator('.git-hunk').first().click();
+    await page.locator('.git-diff-line.hunk').first().waitFor();
+    await page.locator('.git-diff-line.hunk').first().click();
     await until(async () => (await lastClick(page))?.path.endsWith('peek.ts@:index~:worktree'));
     assert.equal(await gitRail(page).isVisible(), false, 'the file the keys chose slides the list away again');
   }));
@@ -261,4 +261,72 @@ test('A Git tab that opens again draws the layout the last one was left at', { t
     await mainBranch(page).waitFor();
     assert.equal(await railWidth(), 280, 'the width is the one the last tab was left at');
     assert.equal(await gitRail(page).locator('details[data-stage=unstaged]').evaluate((details) => details.open), false, 'the section folded before stays folded');
+  }));
+
+test('the preview patch answers vim motions', { timeout: caseTimeout }, () => withGitApp('wangcai-git-vim',
+  gitLists,
+  async ({ home, env, page }) => {
+    const { repo, git } = repoIn(home, env, 'repo');
+    const file = join(repo, 'app.ts');
+    const lines = Array.from({ length: 12 }, (_, at) => `const line${at} = ${at};`);
+    writeFileSync(file, lines.join('\n') + '\n');
+    git('add', '.'); git('commit', '-qm', 'initial');
+    lines[1] = 'const line1 = 100;';
+    lines[9] = 'const line9 = 900;';
+    writeFileSync(file, lines.join('\n') + '\n');
+    await readRepo(page, repo, 'repo');
+    await sectionFiles(page, '未暂存').filter({ hasText: 'app.ts' }).click();
+    await until(() => page.locator('.git-diff-line').count().then(n => n > 0));
+    await until(() => page.evaluate(() => document.activeElement?.classList.contains('git-diff') ?? false));
+    const cursorAt = () => page.evaluate(() => [...document.querySelectorAll('.git-diff-line')].findIndex(el => el.querySelector('.git-cursor')));
+    const colOf = () => page.evaluate(() => Number(document.querySelector('.git-diff-line[data-col]')?.getAttribute('data-col')));
+    await until(() => cursorAt().then(n => n === 0));
+    await page.keyboard.type('j');
+    await until(() => cursorAt().then(n => n === 1));
+    await page.keyboard.type('gg');
+    await until(() => cursorAt().then(n => n === 0));
+    await page.keyboard.type('5j');
+    await until(() => cursorAt().then(n => n === 5));
+    await page.keyboard.type('k');
+    await until(() => cursorAt().then(n => n === 4));
+    await page.keyboard.type('gg');
+    await until(() => colOf().then(c => c === 0));
+    await page.keyboard.type('l');
+    await until(() => colOf().then(c => c === 1));
+    await page.keyboard.type('3l');
+    await until(() => colOf().then(c => c === 4));
+    await page.keyboard.type('h');
+    await until(() => colOf().then(c => c === 3));
+    // A click seats the cursor where it lands; a - line carries no new-side line, so the preview stays put.
+    const delAt = await page.evaluate(() => [...document.querySelectorAll('.git-diff-line')].findIndex(el => el.classList.contains('del')));
+    await page.locator('.git-diff-line.del').first().click();
+    await until(() => cursorAt().then(n => n === delAt));
+    await page.keyboard.type('G');
+    const last = (await page.locator('.git-diff-line').count()) - 1;
+    await until(() => cursorAt().then(n => n === last));
+    const expected = Number(await page.locator('.git-diff-line').nth(last).getAttribute('data-line'));
+    await catchClicks(page);
+    await page.keyboard.press('Enter');
+    await until(() => lastClick(page).then(click => click?.path?.startsWith('git://')));
+    const opened = await lastClick(page);
+    assert.equal(opened.path, `git://${repo}/app.ts@:index~:worktree`);
+    assert.equal(opened.line, expected, 'Enter opens the cursor line at the new-side line it carries');
+  }));
+
+test('l hands the keyboard to the patch view even when it is already shown', { timeout: caseTimeout }, () => withGitApp('wangcai-git-l-focus',
+  gitLists,
+  async ({ home, env, page }) => {
+    const { repo, git } = repoIn(home, env, 'repo');
+    const file = join(repo, 'app.ts');
+    writeFileSync(file, 'const a = 1;\n');
+    git('add', '.'); git('commit', '-qm', 'initial');
+    writeFileSync(file, 'const a = 2;\n');
+    await readRepo(page, repo, 'repo');
+    await sectionFiles(page, '未暂存').filter({ hasText: 'app.ts' }).click();
+    await until(() => page.locator('.git-diff-line').count().then(n => n > 0));
+    // Click the same row again: the rail's onClick occupy hands the focus back to the list, so the preview is shown but unfocused.
+    await sectionFiles(page, '未暂存').filter({ hasText: 'app.ts' }).click();
+    await until(() => page.evaluate(() => document.activeElement?.closest('.git-rail') !== null));
+    await page.keyboard.press('l');
+    await until(() => page.evaluate(() => document.activeElement?.classList.contains('git-diff') ?? false));
   }));

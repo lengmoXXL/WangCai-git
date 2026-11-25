@@ -57,8 +57,8 @@ test('a file chosen in the Git list previews its change; a hunk opens the compar
 
   // Choosing the unstaged file previews its change in the board; clicking a hunk hands the comparison to the editor.
   await page.locator('.git-rail details').filter({ has: page.locator('summary', { hasText: /^未暂存/ }) }).locator('.git-file').first().click();
-  await page.locator('.git-hunk').first().waitFor();
-  await page.locator('.git-hunk').first().click();
+  await page.locator('.git-diff-line.hunk').first().waitFor();
+  await page.locator('.git-diff-line.hunk').first().click();
   const gear = page.getByRole('button', { name: '差异设置' });
   await gear.click();
   const reading = page.locator('.code-menu button').filter({ hasText: /^阅读方式/ });
