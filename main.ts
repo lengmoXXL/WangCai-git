@@ -1,4 +1,4 @@
-import type { MachineConnection, WorkspaceActive } from '@lengmoxxl/sdk';
+import { workspaceAlias, type MachineConnection, type WorkspaceActive } from '@lengmoxxl/sdk';
 import type { MainContext } from '@lengmoxxl/sdk/channel';
 import { readFiles, readHistory, readOverview, readPatch, type RunGit } from './git';
 import type { DiffRequest, FilesRequest, HistoryRequest, OverviewRequest } from './shared';
@@ -51,7 +51,7 @@ export function activate(context: MainContext) {
   };
   const handlers = [
     context.ui.handle('overview', (query: OverviewRequest) => withConnection(query.terminal.machine, async connection =>
-      readOverview(await connection.pty.cwd(query.terminal.sessionId), runGit(connection)))),
+      readOverview(await context.request<string>(workspaceAlias, 'cwd', { workspaceId: query.terminal.workspaceId }), runGit(connection)))),
     context.ui.handle('history', (query: HistoryRequest) => withConnection(query.terminal.machine, async connection =>
       readHistory(query, runGit(connection)))),
     context.ui.handle('files', (query: FilesRequest) => withConnection(query.terminal.machine, async connection =>
